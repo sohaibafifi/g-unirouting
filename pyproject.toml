@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "g-unirouting"
 version = "0.1.0"
-description = "Multi-Agent Vehicle Routing Problem (MAVRP) solver using Graph Neural Networks and Reinforcement Learning"
+description = "A Graph-Based Unified Neural Model for Solving Multi-Attribute Vehicle Routing Problems"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
