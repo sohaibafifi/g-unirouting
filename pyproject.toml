@@ -1,0 +1,123 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "g-unirouting"
+version = "0.1.0"
+description = "Multi-Agent Vehicle Routing Problem (MAVRP) solver using Graph Neural Networks and Reinforcement Learning"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Sohaib AFIFI", email = "sohaib.lafifi@univ-artois.fr"}
+]
+keywords = ["vehicle routing", "VRP", "reinforcement learning", "graph neural networks", "optimization"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+    "lightning>=2.0.0",
+    "torch-geometric>=2.3.0",
+    "pyvrp>=0.6.0",
+    "numpy>=1.24.0,<2.0.0",
+    "scipy>=1.10.0",
+    "rich>=13.0.0,<14.0.0",
+    "human-readable>=1.3.0",
+    "einops>=0.6.0",
+    "matplotlib>=3.7.0",
+    "wandb>=0.15.0",
+    "tqdm>=4.65.0",
+    # Note: torch_cluster needs to be installed manually with --no-build-isolation
+    # See installation instructions in README.md or INSTALLATION.md
+    "scipy-stubs~=1.16.3",
+    "flake8==7.3.0",
+    "isort==7.0.0",
+    "black==25.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.3.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+train-mavrp = "train:main"
+
+[project.urls]
+Homepage = "https://github.com/sohaibafifi/g-unirouting"
+Repository = "https://github.com/sohaibafifi/g-unirouting"
+Documentation = "https://github.com/sohaibafifi/g-unirouting"
+"Bug Tracker" = "https://github.com/sohaibafifi/g-unirouting/issues"
+
+[tool.setuptools]
+packages = ["mavrp"]
+
+[tool.setuptools.package-data]
+mavrp = ["py.typed"]
+
+[tool.black]
+line-length = 120
+target-version = ["py311", "py312", "py313"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+  | output
+  | data
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120
+skip_gitignore = true
+known_first_party = ["mavrp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+    "-v",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18.2",
+]
+
+
