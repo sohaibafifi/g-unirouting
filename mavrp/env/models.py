@@ -3,6 +3,7 @@ from typing import Optional, Tuple
 import torch.nn
 from torch import Tensor
 
+from .decoders import MultiStartDecoder, MultiStartRecourseDecoder, RecourseDecoder
 from .encoders import GATEncoder
 from .mixins import FreezingMixin, InfoMixin
 
@@ -37,16 +38,23 @@ class TransformerModel(torch.nn.Module, InfoMixin, FreezingMixin):
             return self.augment_and_apply(inputs, decode_mode=decode_mode)
 
     def use_multi_start(self):
-        from mavrp.env.decoders.multistart import MultiStartDecoder
-        ms_decoder = MultiStartDecoder(self.config).to(device=self.config.device)
+        decoder_cls = (
+            MultiStartRecourseDecoder
+            if isinstance(self.decoder, RecourseDecoder)
+            else MultiStartDecoder
+        )
+        ms_decoder = decoder_cls(self.config).to(device=self.config.device)
         ms_decoder.load_state_dict(self.decoder.state_dict())
         ms_decoder.freeze()
         self.decoder = ms_decoder
 
     def augment_and_apply(self, inputs, decode_mode="greedy"):
-        from mavrp.env.decoders.multistart import MultiStartDecoder
-
-        inference_decoder = MultiStartDecoder(self.config).to(device=self.config.device)
+        decoder_cls = (
+            MultiStartRecourseDecoder
+            if isinstance(self.decoder, RecourseDecoder)
+            else MultiStartDecoder
+        )
+        inference_decoder = decoder_cls(self.config).to(device=self.config.device)
         inference_decoder.load_state_dict(self.decoder.state_dict())
         inference_decoder.freeze()
 

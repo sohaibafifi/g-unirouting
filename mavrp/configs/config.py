@@ -5,7 +5,7 @@ import torch
 from rich.console import Console
 from rich.table import Table
 
-from mavrp.env.decoders import EndToEndDecoder
+from mavrp.env.decoders import EndToEndDecoder, RecourseDecoder
 from mavrp.env.encoders import (
     AttentionEncoder,
     GATEncoder,
@@ -83,14 +83,14 @@ class Config:
                 problem=["MTVRP"],
                 graph_size=[50],
                 encoder=[SageEncoder, AttentionEncoder],
-                decoder=[EndToEndDecoder],
+                decoder=[EndToEndDecoder, RecourseDecoder],
                 bias=[b],
                 dist_in_kv=[d],
                 use_edge_attn=[e],
                 use_global_in_context=[g],
             )
             for b, d, e, g in [
-                (True, True, True, True),
+                (True, True, False, True),
             ]
         ]
 
