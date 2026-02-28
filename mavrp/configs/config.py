@@ -82,7 +82,7 @@ class Config:
             dict(
                 problem=["MTVRP"],
                 graph_size=[50],
-                encoder=[SageEncoder],
+                encoder=[SageEncoder, AttentionEncoder],
                 decoder=[EndToEndDecoder],
                 bias=[b],
                 dist_in_kv=[d],
@@ -90,11 +90,7 @@ class Config:
                 use_global_in_context=[g],
             )
             for b, d, e, g in [
-                (True, True, False, True),
                 (True, True, True, True),
-                (False, True, True, True),
-                (True, False, True, True),
-                (True, True, True, False),
             ]
         ]
 
