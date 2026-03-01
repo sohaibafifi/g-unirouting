@@ -269,14 +269,18 @@ class MixedScoresEncoder(torch.nn.Module, InfoMixin, FreezingMixin):
         demands_b = node_features[:, :, 3]
 
         # Zero out distances for open routes on first column
-        dist_mat[open_routes, :, 0] = 0.0
+        if open_routes.any():
+            dist_mat = dist_mat.clone()
+            zeros = torch.zeros_like(dist_mat[:, :, 0])
+            dist_mat[:, :, 0] = torch.where(open_routes.unsqueeze(-1), zeros, dist_mat[:, :, 0])
         # Backhaul/linehaul invalid combinations
         backhauls_inst = (torch.sum(demands_b, dim=-1) > 0) & (~mixed_backhauls)
         backhauls_inst = backhauls_inst.unsqueeze(-1).expand_as(demands_b)
         backhauls_mask = (demands_b > 0) & backhauls_inst
         linehauls_mask = (demands > 0) & backhauls_inst
         invalid_mask = backhauls_mask.unsqueeze(-1) & linehauls_mask.unsqueeze(1)
-        dist_mat.masked_fill_(invalid_mask, 1e9)
+        if invalid_mask.any():
+            dist_mat = dist_mat.masked_fill(invalid_mask, 1e9)
 
         window_slack = torch.nan_to_num(window_slack, nan=1e9, posinf=1e9, neginf=1e9)
         # Stack features into dmat: distance, demand diff, window slack, angle

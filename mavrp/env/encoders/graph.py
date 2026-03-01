@@ -132,7 +132,7 @@ class GraphEmbeddingLayer(torch.nn.Module):
         torch.nn.init.xavier_uniform_(self.edge_embedding.weight)
 
     @staticmethod
-    @torch.compile()
+    # @torch.compile()
     def get_deltas(node_features: torch.Tensor, global_features: torch.Tensor):
         # Compute distances and factor
         locations = node_features[:, :, :2]
@@ -141,15 +141,18 @@ class GraphEmbeddingLayer(torch.nn.Module):
         demands_b = node_features[:, :, 3]
         demands = node_features[:, :, 2]
         distances = torch.cdist(locations, locations)
-
-        distances[open_routes, :, 0] = 0.0
+        if open_routes.any():
+            distances = distances.clone()
+            zeros = torch.zeros_like(distances[:, :, 0])
+            distances[:, :, 0] = torch.where(open_routes.unsqueeze(-1), zeros, distances[:, :, 0])
         backhauls_instances = (torch.sum(demands_b, dim=-1) > 0) & (~mixed_backhauls)
         backhauls_instances = backhauls_instances.unsqueeze(-1).expand_as(demands_b)
         backhauls_mask = (demands_b > 0) & backhauls_instances  # [batch_size, seq_len], True where node is backhaul
         linehauls_mask = (demands > 0) & backhauls_instances  # [batch_size, seq_len], True where node is linehaul
 
         invalid_mask = backhauls_mask.unsqueeze(-1) & linehauls_mask.unsqueeze(1)
-        distances[invalid_mask] = float('inf')
+        if invalid_mask.any():
+            distances = distances.masked_fill(invalid_mask, float('inf'))
 
         # TODO : filter out the edges that are not valid from time windows
 
@@ -200,7 +203,7 @@ class GraphEmbeddingLayer(torch.nn.Module):
 
             prob = torch.softmax(-distances / temperature, dim=-1)
             mask = torch.eye(seq_len, device=device).to(torch.bool).unsqueeze(0)
-            prob.masked_fill_(mask, 0)
+            prob = prob.masked_fill(mask, 0)
             prob = prob.view(num_nodes, seq_len)
             samples = torch.multinomial(prob, num_samples=nb_neighbors,
                                         replacement=False)  # shape: [num_nodes, nb_neighbors]

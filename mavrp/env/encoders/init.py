@@ -37,12 +37,28 @@ class InitialEmbeddingLayer(torch.nn.Module):
                  Node embeddings [batch_size, seq_len, embedding_dim],
                  Global node embedding [batch_size, embedding_dim]
         """
-        capacities = global_features[:, 0]  # save the capacities first
+        capacities = global_features[:, :1]  # [batch_size, 1]
 
-        # normalize demands
-        node_features[:, :, 2] /= capacities.view(-1, 1)
-        node_features[:, :, 3] /= capacities.view(-1, 1)
-        global_features[:, 0] = 1.0
+        # Keep this layer autograd-safe for input attribution by avoiding
+        # in-place mutations on views derived from the inputs.
+        normalized_demands = node_features[:, :, 2] / capacities
+        normalized_backhauls = node_features[:, :, 3] / capacities
+        node_features = torch.cat(
+            (
+                node_features[:, :, :2],
+                normalized_demands.unsqueeze(-1),
+                normalized_backhauls.unsqueeze(-1),
+                node_features[:, :, 4:],
+            ),
+            dim=-1,
+        )
+        global_features = torch.cat(
+            (
+                torch.ones_like(global_features[:, :1]),
+                global_features[:, 1:],
+            ),
+            dim=-1,
+        )
 
         if global_features.size(1) == self.global_embedding.in_features - 1:
             # Add missing features from already generated instances
@@ -66,6 +82,7 @@ class InitialEmbeddingLayer(torch.nn.Module):
 
         node_embeddings = self.features_embedding(node_features)
 
-        node_embeddings[:, 0] += global_embeddings
+        depot_embeddings = node_embeddings[:, :1] + global_embeddings.unsqueeze(1)
+        node_embeddings = torch.cat((depot_embeddings, node_embeddings[:, 1:]), dim=1)
         node_embeddings = self.features_norm(node_embeddings)
         return node_embeddings, global_embeddings

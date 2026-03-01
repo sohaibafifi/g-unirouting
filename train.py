@@ -67,4 +67,5 @@ if __name__ == '__main__':
         model.model.load_from_ckpt(model_path, baseline=True)
         model.baseline.update(model.model)
 
-    torch.compile(model, fullgraph=True, dynamic=True).fit()
+    #torch.compile(model, fullgraph=True, dynamic=True).fit()
+    model.fit()

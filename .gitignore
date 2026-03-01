@@ -80,6 +80,7 @@ data/
 *.ckpt
 *.pth
 *.pt
+logs/
 wandb/
 lightning_logs/
 checkpoints/
