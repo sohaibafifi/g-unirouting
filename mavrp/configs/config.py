@@ -44,7 +44,7 @@ class Config:
         self.seed = 12341
         self.disable_logger = False
         self.working_dir = "./output"
-        self.factor = 2**2
+        self.factor = 1
         self.n_epochs = 301 * self.factor
         self.nb_val_samples = 2**12 // self.factor  # = 4k/factor = 1k
         self.nb_train_samples = 2**17 // self.factor  # = 128k/factor = 32k
