@@ -17,7 +17,7 @@ class MultiStartRecourseDecoder(RecourseDecoder):
         decode_mode: str = "sample",
         actions: Any = None,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[Any, Any, Any, Any]:
         assert isinstance(inputs, tuple) and len(inputs) == 2, "inputs must be (node_features, global_features)"
         assert actions is None, "actions not supported in multistart decoder"
         batch_size, seq_len, _ = node_embeddings.size()
@@ -37,7 +37,7 @@ class MultiStartRecourseDecoder(RecourseDecoder):
             .repeat(batch_size, 1)
             .view(-1)
         )
-        log_probabilities, solution, costs = super().forward(
+        log_probabilities, solution, costs, metrics = super().forward(
             inputs,
             node_embeddings,
             global_embeddings,
@@ -48,11 +48,13 @@ class MultiStartRecourseDecoder(RecourseDecoder):
 
         solution = solution.view(n_starts, batch_size, -1)
         costs = costs.view(n_starts, batch_size)
+        metrics = metrics.view(n_starts, batch_size)
         log_probabilities = log_probabilities.view(n_starts, batch_size)
 
         costs, costs_idx = torch.min(costs, dim=0)
         batch_index = torch.arange(batch_size, device=device)
         solution = solution[costs_idx, batch_index, :]
         log_probabilities = log_probabilities.mean(dim=0)
+        metrics = metrics[costs_idx, batch_index]
 
-        return log_probabilities, solution, costs
+        return log_probabilities, solution, costs, metrics

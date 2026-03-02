@@ -84,14 +84,7 @@ class Config:
                 graph_size=[50],
                 encoder=[SageEncoder, AttentionEncoder],
                 decoder=[EndToEndDecoder, RecourseDecoder],
-                bias=[b],
-                dist_in_kv=[d],
-                use_edge_attn=[e],
-                use_global_in_context=[g],
             )
-            for b, d, e, g in [
-                (True, True, False, True),
-            ]
         ]
 
     def __repr__(self):

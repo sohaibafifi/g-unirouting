@@ -43,7 +43,7 @@ def test_recourse_decoder_adds_rescue_trip_and_preserves_main_route_state():
         decode_mode="greedy",
         actions=forced_actions,
     )
-    _, solution_rec, cost_rec = recourse_decoder(
+    _, solution_rec, cost_rec, _ = recourse_decoder(
         (node_features, global_features),
         node_embeddings,
         global_embeddings,
@@ -70,7 +70,7 @@ def test_recourse_decoder_open_route_only_charges_outbound_leg():
     global_embeddings = torch.randn(batch_size, config.embedding_dim)
     forced_actions = torch.tensor([[0, 1, 2, 0]], dtype=torch.long)
 
-    _, solution_rec, cost_rec = recourse_decoder(
+    log_probabilities, solution, cost, metrics = recourse_decoder(
         (node_features, global_features),
         node_embeddings,
         global_embeddings,
@@ -78,5 +78,5 @@ def test_recourse_decoder_open_route_only_charges_outbound_leg():
         actions=forced_actions,
     )
 
-    assert torch.equal(solution_rec, forced_actions)
-    assert torch.allclose(cost_rec, torch.tensor([3.0]))
+    assert torch.equal(solution, forced_actions)
+    assert torch.allclose(cost, torch.tensor([3.0]))
