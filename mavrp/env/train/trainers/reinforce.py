@@ -18,11 +18,46 @@ from tqdm import tqdm
 from mavrp.configs.config import Config
 from mavrp.env.baselines import RolloutBaseline
 from mavrp.env.datasets import MTVRPDataset
+from mavrp.env.decoders import EndToEndDecoder, MultiStartDecoder, MultiStartRecourseDecoder, RecourseDecoder
+from mavrp.env.encoders import (
+    AttentionEncoder,
+    GATEncoder,
+    GATv2Encoder,
+    GPSEncoder,
+    MixedScoresEncoder,
+    PerformerEncoder,
+    SageEncoder,
+    TransformerEncoder,
+)
 from mavrp.env.mixins import InfoMixin
 from mavrp.env.models import TransformerModel
 from mavrp.env.normalization import CostNormalization
 from mavrp.env.train.logging import Stats
 from mavrp.env.train.lr_scheduler import MultiStepWithWarmupLR
+
+# PyTorch >= 2.6 defaults to weights_only=True in torch.load.
+# Lightning checkpoints store our Config object (which references encoder/decoder
+# classes), so we must allowlist all custom types that may appear in a checkpoint.
+torch.serialization.add_safe_globals([
+    Config,
+    Stats,
+    # encoders
+    AttentionEncoder,
+    GATEncoder,
+    GATv2Encoder,
+    GPSEncoder,
+    MixedScoresEncoder,
+    PerformerEncoder,
+    SageEncoder,
+    TransformerEncoder,
+    # decoders
+    EndToEndDecoder,
+    MultiStartDecoder,
+    MultiStartRecourseDecoder,
+    RecourseDecoder,
+    # activation stored in Config.activation
+    torch.nn.ReLU,
+])
 
 
 class ReinforceTrainer(L.LightningModule, InfoMixin):
