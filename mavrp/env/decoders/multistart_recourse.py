@@ -48,13 +48,11 @@ class MultiStartRecourseDecoder(RecourseDecoder):
 
         solution = solution.view(n_starts, batch_size, -1)
         costs = costs.view(n_starts, batch_size)
-        metrics = metrics.view(n_starts, batch_size)
         log_probabilities = log_probabilities.view(n_starts, batch_size)
 
         costs, costs_idx = torch.min(costs, dim=0)
         batch_index = torch.arange(batch_size, device=device)
         solution = solution[costs_idx, batch_index, :]
         log_probabilities = log_probabilities.mean(dim=0)
-        metrics = metrics[costs_idx, batch_index]
 
-        return log_probabilities, solution, costs, metrics
+        return log_probabilities, solution, costs
