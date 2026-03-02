@@ -37,7 +37,7 @@ class MultiStartRecourseDecoder(RecourseDecoder):
             .repeat(batch_size, 1)
             .view(-1)
         )
-        log_probabilities, solution, costs, metrics = super().forward(
+        log_probabilities, solution, costs = super().forward(
             inputs,
             node_embeddings,
             global_embeddings,

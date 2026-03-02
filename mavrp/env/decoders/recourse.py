@@ -333,9 +333,8 @@ class RecourseDecoder(DecoderBase, FreezingMixin):
             not_served[current_node != 0, 0] = True
 
         cost = total_distance + detour_cost
-        metrics = torch.stack([total_distance, detour_cost], dim=-1)
 
-        return -log_probabilities, solution, cost, metrics
+        return -log_probabilities, solution, cost
 
     def repair_solution(self, solution, violated_nodes_mask, deltas):
         batch_size = solution.size(0)
