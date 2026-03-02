@@ -481,6 +481,7 @@ def _shared_group_key(report: Dict[str, Any]) -> Tuple[Any, ...]:
         tuple(int(v) for v in cfg.get("topk_nodes", [])),
         bool(cfg.get("randomize_weights", False)),
         str(cfg.get("node_importance_mode", "")),
+        str(cfg.get("ig_baseline", "")),
         float(cfg.get("feasibility_weight", 0.0)),
         int(cfg.get("feasibility_top_m", 0)),
         float(cfg.get("feasibility_cost_weight", 0.0)),

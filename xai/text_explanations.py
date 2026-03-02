@@ -125,10 +125,13 @@ def _format_top_features(top_features: List[dict]) -> str:
 
 def _format_top_constraints(top_constraints: List[dict]) -> str:
     parts = []
-    for item in top_constraints:
+    for idx, item in enumerate(top_constraints, start=1):
         name = _constraint_label(str(item.get("constraint", "")))
         share = float(item.get("share", 0.0)) * 100.0
-        parts.append(f"{name} ({share:.1f}%)")
+        if idx <= 3:
+            parts.append(f"{name} ({share:.1f}%)")
+        else:
+            parts.append(f"{name} ({share:.1f}%, hors top 3)")
     return ", ".join(parts)
 
 

@@ -177,14 +177,16 @@ def _aggregate_constraint_scores(feature_scores: Dict[str, float]) -> Dict[str, 
 
 
 def _top_constraint_payload(
-    constraint_scores: Dict[str, float], top_n: int = 3
+    constraint_scores: Dict[str, float], top_n: Optional[int] = 3
 ) -> List[Dict[str, float]]:
     if not constraint_scores:
         return []
     total = sum(max(float(v), 0.0) for v in constraint_scores.values())
     items = sorted(
         constraint_scores.items(), key=lambda x: max(float(x[1]), 0.0), reverse=True
-    )[:top_n]
+    )
+    if top_n is not None:
+        items = items[:top_n]
     payload: List[Dict[str, float]] = []
     for name, score in items:
         score_pos = max(float(score), 0.0)
@@ -1657,12 +1659,12 @@ def run(args: argparse.Namespace) -> Path:
 
         top_features_payload = _top_feature_payload(step_feature_attr_mean, top_n=3)
         step_constraint_attr_mean = _aggregate_constraint_scores(step_feature_attr_mean)
-        top_constraints_payload = _top_constraint_payload(step_constraint_attr_mean, top_n=3)
+        top_constraints_payload = _top_constraint_payload(step_constraint_attr_mean, top_n=None)
         step_contrastive_constraint_attr_mean = _aggregate_constraint_scores(
             step_contrastive_feature_attr_mean
         )
         top_contrastive_constraints_payload = _top_constraint_payload(
-            step_contrastive_constraint_attr_mean, top_n=3
+            step_contrastive_constraint_attr_mean, top_n=None
         )
         for group_name, score in step_constraint_attr_mean.items():
             per_constraint_attr[group_name].append(float(score))
@@ -1795,7 +1797,7 @@ def run(args: argparse.Namespace) -> Path:
                 }
                 inst_top_features = _top_feature_payload(inst_feat_scores, top_n=3)
                 inst_constraint_scores = _aggregate_constraint_scores(inst_feat_scores)
-                inst_top_constraints = _top_constraint_payload(inst_constraint_scores, top_n=3)
+                inst_top_constraints = _top_constraint_payload(inst_constraint_scores, top_n=None)
 
                 inst_contrastive_feat_scores = {
                     key: float(instance_contrastive_feature_attr[key][i].item())
@@ -1805,7 +1807,7 @@ def run(args: argparse.Namespace) -> Path:
                     inst_contrastive_feat_scores
                 )
                 inst_top_contrastive_constraints = _top_constraint_payload(
-                    inst_contrastive_constraint_scores, top_n=3
+                    inst_contrastive_constraint_scores, top_n=None
                 )
                 counterfactual_payload = _propose_counterfactual(
                     model=model,
