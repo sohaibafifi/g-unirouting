@@ -11,7 +11,8 @@ from typing import Any, Dict, List
 from rich.console import Console
 from rich.table import Table
 
-import action_explainer_ig as ig_main
+import action_explainer as grad_base
+import integrated_gradients_explainer as ig_main
 
 
 def _parse_baselines(raw: str) -> List[str]:
@@ -53,7 +54,12 @@ def _run_args(args: argparse.Namespace, baseline: str) -> argparse.Namespace:
         output_dir=args.output_dir,
         max_instances_to_store=store_count,
         save_step_records=args.save_step_records,
-        save_instance_traces=args.save_instance_traces,
+        save_instance_traces=True,
+        attribution_methods="integrated_gradients",
+        feasibility_weight=None,
+        feasibility_top_m=8,
+        feasibility_cost_weight=0.25,
+        randomize_weights=False,
     )
 
 
@@ -166,12 +172,12 @@ def main() -> None:
 
     baselines = _parse_baselines(args.ig_baselines)
     topk_values = _parse_topk(args.topk_nodes)
-    ig_main.grad_base._preflight_check()
+    grad_base._preflight_check()
 
     rows: List[Dict[str, Any]] = []
     report_paths: List[str] = []
     for baseline in baselines:
-        report_path = ig_main.run(_run_args(args, baseline))
+        report_path = ig_main.run(_run_args(args, baseline), grad_base_module=grad_base)
         report_paths.append(str(report_path))
         rows.append(_hydrate_metrics_from_shared(report_path, topk_values))
 
@@ -186,9 +192,9 @@ def main() -> None:
     if args.summary_output:
         summary_path = Path(args.summary_output)
     else:
-        summary_dir = Path("logs/xai/ig")
+        summary_dir = Path("logs/xai")
         summary_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = summary_dir / f"baseline_compare_{int(time.time())}.json"
+        summary_path = summary_dir / f"ig_baseline_compare_{int(time.time())}.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary_payload, handle, indent=2)

@@ -15,6 +15,26 @@ class RunSpec:
     model_label: str
 
 
+def _parse_attribution_methods(raw: str) -> List[str]:
+    values = []
+    for token in str(raw).split(","):
+        token = token.strip().lower()
+        if not token:
+            continue
+        if token in {"gradient", "grad", "saliency", "gradient_local"}:
+            key = "gradient"
+        elif token in {"integrated_gradients", "ig"}:
+            key = "integrated_gradients"
+        else:
+            raise ValueError(
+                f"Unsupported attribution method {token!r}. "
+                "Use 'gradient' and/or 'integrated_gradients'."
+            )
+        if key not in values:
+            values.append(key)
+    return values or ["gradient", "integrated_gradients"]
+
+
 def _discover_specs(project_root: Path, pattern: str) -> List[RunSpec]:
     specs: List[RunSpec] = []
     for raw_path in sorted(glob.glob(str(project_root / pattern))):
@@ -51,6 +71,16 @@ def _seed_for_repeat(args: argparse.Namespace, repeat_idx: int) -> Optional[int]
     if args.repeat_mode == "robustness":
         return int(args.seed) + int(repeat_idx)
     return int(args.seed)
+
+
+def _report_method(report_cfg: Dict[str, Any]) -> str:
+    method = str(report_cfg.get("attribution_method", "")).strip().lower()
+    if method in {"gradient", "integrated_gradients"}:
+        return method
+    label = str(report_cfg.get("model_label", "")).strip().lower()
+    if "[ig:" in label:
+        return "integrated_gradients"
+    return "gradient"
 
 
 def _report_matches_spec(
@@ -121,17 +151,30 @@ def _matching_seed_counter(
     project_root: Path,
     spec: RunSpec,
     args: argparse.Namespace,
+    requested_methods: List[str],
     cached_reports: Optional[List[Dict[str, Any]]] = None,
-) -> Counter:
+) -> Dict[Optional[int], Counter]:
     reports = cached_reports if cached_reports is not None else _existing_reports(project_root)
-    counter: Counter = Counter()
+    counter: Dict[Optional[int], Counter] = {}
     for report in reports:
         cfg = report.get("config", {})
         if not _report_matches_spec(cfg, spec, args):
             continue
+        method = _report_method(cfg)
+        if method not in requested_methods:
+            continue
+        if method == "integrated_gradients":
+            try:
+                if int(cfg.get("ig_steps", -1)) != int(args.ig_steps):
+                    continue
+            except Exception:
+                continue
+            if str(cfg.get("ig_baseline", "")).strip() != str(args.ig_baseline).strip():
+                continue
         raw_seed = cfg.get("seed", None)
         seed_value = None if raw_seed in (None, "") else int(raw_seed)
-        counter[seed_value] += 1
+        counter.setdefault(seed_value, Counter())
+        counter[seed_value][method] += 1
     return counter
 
 
@@ -143,6 +186,7 @@ def run_batch(args: argparse.Namespace) -> int:
         raise ValueError("--repeats > 1 requires --seed")
 
     specs = _discover_specs(project_root, args.checkpoints_glob)
+    requested_methods = _parse_attribution_methods(args.attribution_methods)
     if args.model_filter:
         wanted = {tok.strip().lower() for tok in args.model_filter.split(",") if tok.strip()}
         specs = [
@@ -161,19 +205,28 @@ def run_batch(args: argparse.Namespace) -> int:
     queued: List[tuple[RunSpec, int, Optional[int]]] = []
     for spec in specs:
         seed_counter = (
-            _matching_seed_counter(project_root, spec, args, cached_reports=existing_reports)
+            _matching_seed_counter(
+                project_root,
+                spec,
+                args,
+                requested_methods,
+                cached_reports=existing_reports,
+            )
             if args.skip_existing
-            else Counter()
+            else {}
         )
         for repeat_idx in range(int(args.repeats)):
             run_seed = _seed_for_repeat(args, repeat_idx)
             if args.skip_existing:
+                method_counter = seed_counter.get(run_seed, Counter())
+                has_full_run = all(method_counter.get(method, 0) > 0 for method in requested_methods)
                 if args.repeat_mode == "robustness":
-                    if seed_counter.get(run_seed, 0) > 0:
+                    if has_full_run:
                         continue
                 else:
-                    if seed_counter.get(run_seed, 0) > 0:
-                        seed_counter[run_seed] -= 1
+                    if has_full_run:
+                        for method in requested_methods:
+                            method_counter[method] -= 1
                         continue
             queued.append((spec, repeat_idx + 1, run_seed))
 
@@ -203,9 +256,12 @@ def run_batch(args: argparse.Namespace) -> int:
             f"--num-instances={args.num_instances}",
             f"--max-steps={args.max_steps}",
             f"--topk-nodes={args.topk_nodes}",
+            f"--attribution-methods={args.attribution_methods}",
             f"--feasibility-top-m={args.feasibility_top_m}",
             f"--feasibility-cost-weight={args.feasibility_cost_weight}",
             f"--attr-features={args.attr_features}",
+            f"--ig-steps={args.ig_steps}",
+            f"--ig-baseline={args.ig_baseline}",
             f"--max-instances-to-store={args.max_instances_to_store}",
         ]
         if args.feasibility_weight is not None:
@@ -260,19 +316,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python-bin", default=".venv/bin/python")
     parser.add_argument("--num-instances", type=int, default=128)
     parser.add_argument("--max-steps", type=int, default=300)
-    parser.add_argument("--seed", type=int, default=None, help="Base evaluation seed.")
-    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument(
+        "--attribution-methods",
+        default="gradient,integrated_gradients",
+        help="Comma-separated methods passed to xai/action_explainer.py (default: both).",
+    )
+    parser.add_argument("--seed", type=int, default=1234, help="Base evaluation seed.")
+    parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument(
         "--repeat-mode",
         choices=["reproducibility", "robustness"],
-        default="reproducibility",
+        default="robustness",
     )
     parser.add_argument("--topk-nodes", default="[1,3,5]")
     parser.add_argument("--feasibility-weight", type=float, default=None)
     parser.add_argument("--feasibility-top-m", type=int, default=8)
     parser.add_argument("--feasibility-cost-weight", type=float, default=0.25)
     parser.add_argument("--attr-features", default="auto")
-    parser.add_argument("--device", default=None)
+    parser.add_argument("--ig-steps", type=int, default=50)
+    parser.add_argument(
+        "--ig-baseline",
+        choices=[
+            "mean-fill",
+            "zero-with-customers-at-depot",
+            "zero-all",
+            "zero-with-current-locs",
+        ],
+        default="mean-fill",
+    )
+    parser.add_argument("--device", default='cpu')
     parser.add_argument("--max-instances-to-store", type=int, default=8)
     parser.add_argument("--model-filter", default=None)
     parser.add_argument("--max-runs", type=int, default=None)

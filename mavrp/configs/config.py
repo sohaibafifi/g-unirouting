@@ -80,8 +80,6 @@ class Config:
     def combinations():
         return [
             dict(
-                problem=["MTVRP"],
-                graph_size=[50],
                 encoder=[SageEncoder, AttentionEncoder],
                 decoder=[EndToEndDecoder, RecourseDecoder],
             )

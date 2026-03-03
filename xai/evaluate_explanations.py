@@ -92,8 +92,6 @@ def _constraint_share(payload: List[Dict[str, Any]], constraint_name: str) -> fl
 
 def _load_reports(pattern: str, latest: int | None) -> List[Dict[str, Any]]:
     files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
-    if latest is not None:
-        files = files[:latest]
 
     reports: List[Dict[str, Any]] = []
     for path in files:
@@ -104,6 +102,83 @@ def _load_reports(pattern: str, latest: int | None) -> List[Dict[str, Any]]:
             continue
         reports.append({"file": path, "data": data})
     return reports
+
+
+def _report_method(report: Dict[str, Any]) -> str:
+    cfg = report.get("data", {}).get("config", {}) or {}
+    method = str(cfg.get("attribution_method", "")).strip().lower()
+    if method in {"integrated_gradients", "gradient"}:
+        return method
+    label = str(cfg.get("model_label", "")).strip().lower()
+    if "[ig:" in label:
+        return "integrated_gradients"
+    return "gradient"
+
+
+def _filter_reports_by_method(
+    reports: List[Dict[str, Any]], method_filter: str
+) -> List[Dict[str, Any]]:
+    if method_filter == "all":
+        return reports
+    return [report for report in reports if _report_method(report) == method_filter]
+
+
+def _extract_deletion_metrics(report: Dict[str, Any]) -> Dict[int, Dict[str, float]]:
+    data = report["data"]
+    summary = data.get("summary", {}) or {}
+    deletion = summary.get("deletion_faithfulness", {}) or {}
+    out: Dict[int, Dict[str, float]] = {}
+
+    if isinstance(deletion, dict) and deletion:
+        for raw_k, payload in deletion.items():
+            try:
+                k = int(raw_k)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            out[k] = {
+                "logit_drop": float(payload.get("mean_logit_drop", float("nan"))),
+                "logprob_drop": float(payload.get("mean_logprob_drop", float("nan"))),
+                "flip_rate": float(payload.get("mean_action_flip_rate", float("nan"))),
+            }
+        if out:
+            return out
+
+    steps = data.get("steps", []) or []
+    accum: Dict[int, Dict[str, List[float]]] = defaultdict(
+        lambda: {"logit_drop": [], "logprob_drop": [], "flip_rate": []}
+    )
+    for step in steps:
+        payload = step.get("deletion", {}) or {}
+        if not isinstance(payload, dict):
+            continue
+        for raw_k, metric in payload.items():
+            try:
+                k = int(raw_k)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(metric, dict):
+                continue
+            for src_key, dst_key in [
+                ("mean_logit_drop", "logit_drop"),
+                ("mean_logprob_drop", "logprob_drop"),
+                ("mean_action_flip_rate", "flip_rate"),
+            ]:
+                try:
+                    value = float(metric.get(src_key, float("nan")))
+                except (TypeError, ValueError):
+                    value = float("nan")
+                if math.isfinite(value):
+                    accum[k][dst_key].append(value)
+
+    for k, vals in accum.items():
+        out[k] = {
+            "logit_drop": _safe_mean(vals["logit_drop"]),
+            "logprob_drop": _safe_mean(vals["logprob_drop"]),
+            "flip_rate": _safe_mean(vals["flip_rate"]),
+        }
+    return out
 
 
 def _model_name(report: Dict[str, Any]) -> str:
@@ -1119,6 +1194,159 @@ def _write_csv(rows: List[Dict[str, Any]], output_path: str) -> None:
         writer.writerows(rows)
 
 
+def _deletion_rows(
+    reports: List[Dict[str, Any]], aggregate: bool
+) -> List[Dict[str, Any]]:
+    if not reports:
+        return []
+    if not aggregate:
+        rows: List[Dict[str, Any]] = []
+        for report in reports:
+            rows.append(
+                {
+                    "model": _model_name(report),
+                    "variant_mix": _variant_mix(report["data"].get("summary", {}) or {}),
+                    "deletion_metrics": _extract_deletion_metrics(report),
+                }
+            )
+        return rows
+
+    groups: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = defaultdict(list)
+    for report in reports:
+        groups[_shared_group_key(report)].append(report)
+
+    rows = []
+    for _, group_reports in groups.items():
+        metrics_by_report = [_extract_deletion_metrics(report) for report in group_reports]
+        all_k = sorted({k for metrics in metrics_by_report for k in metrics.keys()})
+        agg_metrics: Dict[int, Dict[str, float]] = {}
+        for k in all_k:
+            agg_metrics[k] = {
+                "flip_rate": _safe_mean(
+                    metrics.get(k, {}).get("flip_rate", float("nan"))
+                    for metrics in metrics_by_report
+                ),
+                "logprob_drop": _safe_mean(
+                    metrics.get(k, {}).get("logprob_drop", float("nan"))
+                    for metrics in metrics_by_report
+                ),
+                "logit_drop": _safe_mean(
+                    metrics.get(k, {}).get("logit_drop", float("nan"))
+                    for metrics in metrics_by_report
+                ),
+            }
+        seeds = sorted(
+            {
+                seed
+                for seed in (_report_seed(report) for report in group_reports)
+                if seed is not None
+            }
+        )
+        rows.append(
+            {
+                "model": _model_name(group_reports[0]),
+                "variant_mix": _variant_mix_across_reports(group_reports),
+                "runs": len(group_reports),
+                "seeds": len(seeds),
+                "seed_range": f"{min(seeds)}..{max(seeds)}" if seeds else "-",
+                "deletion_metrics": agg_metrics,
+            }
+        )
+    return rows
+
+
+def _format_deletion_metric_block(
+    deletion_metrics: Dict[int, Dict[str, float]], key: str, label: str
+) -> str:
+    if not deletion_metrics:
+        return "-"
+    lines = []
+    for k in sorted(deletion_metrics.keys()):
+        value = deletion_metrics[k].get(key, float("nan"))
+        lines.append(f"{label}@{k}={_fmt_float(value)}")
+    return "\n".join(lines) if lines else "-"
+
+
+def _print_deletion_table(rows: List[Dict[str, Any]], layout: str = "auto") -> None:
+    console, compact = _table_console(layout, compact_threshold=150)
+    if not rows:
+        return
+
+    aggregated = "runs" in rows[0]
+
+    if compact:
+        table = Table(
+            title="IG Deletion Faithfulness",
+            box=box.SIMPLE_HEAVY,
+            header_style="bold yellow",
+            expand=True,
+            collapse_padding=True,
+        )
+        table.add_column("model", style="bold", overflow="fold", ratio=3)
+        table.add_column("setup", overflow="fold", ratio=2)
+        table.add_column("metrics", overflow="fold", ratio=3)
+
+        for row in rows:
+            setup_lines = [f"variants: {_cell_text(row['variant_mix'])}"]
+            if aggregated:
+                setup_lines.append(
+                    f"runs={int(row['runs'])} seeds={int(row['seeds'])} range={row['seed_range']}"
+                )
+            metrics_block = [
+                _format_deletion_metric_block(row["deletion_metrics"], "flip_rate", "flip"),
+                _format_deletion_metric_block(
+                    row["deletion_metrics"], "logprob_drop", "dlogp"
+                ),
+                _format_deletion_metric_block(
+                    row["deletion_metrics"], "logit_drop", "dlogit"
+                ),
+            ]
+            table.add_row(
+                _cell_text(row["model"]),
+                "\n".join(setup_lines),
+                "\n".join(block for block in metrics_block if block and block != "-"),
+            )
+        console.print(table)
+        return
+
+    table = Table(
+        title="IG Deletion Faithfulness",
+        box=box.SIMPLE_HEAVY,
+        header_style="bold yellow",
+        expand=True,
+        collapse_padding=True,
+    )
+    table.add_column("model", style="bold", overflow="fold", max_width=42)
+    table.add_column("variants", overflow="fold", max_width=32)
+    if aggregated:
+        table.add_column("runs", justify="right")
+        table.add_column("seeds", justify="right")
+        table.add_column("seed_range", no_wrap=True, max_width=12)
+    table.add_column("flip@k", overflow="fold", max_width=20)
+    table.add_column("dlogp@k", overflow="fold", max_width=20)
+    table.add_column("dlogit@k", overflow="fold", max_width=20)
+
+    for row in rows:
+        cells = [str(row["model"]), str(row["variant_mix"])]
+        if aggregated:
+            cells.extend(
+                [
+                    str(int(row["runs"])),
+                    str(int(row["seeds"])),
+                    str(row["seed_range"]),
+                ]
+            )
+        cells.extend(
+            [
+                _format_deletion_metric_block(row["deletion_metrics"], "flip_rate", "flip"),
+                _format_deletion_metric_block(row["deletion_metrics"], "logprob_drop", "dlogp"),
+                _format_deletion_metric_block(row["deletion_metrics"], "logit_drop", "dlogit"),
+            ]
+        )
+        table.add_row(*cells)
+    console.print(table)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate explanation quality and stability across action_explainer reports."
@@ -1127,6 +1355,12 @@ def main() -> None:
         "--pattern",
         default="logs/xai/action_explainer_*.json",
         help="Glob pattern for reports.",
+    )
+    parser.add_argument(
+        "--method-filter",
+        choices=["all", "gradient", "integrated_gradients"],
+        default="all",
+        help="Restrict evaluation to one attribution method.",
     )
     parser.add_argument(
         "--latest",
@@ -1199,7 +1433,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    reports = _load_reports(args.pattern, args.latest)
+    reports = _filter_reports_by_method(_load_reports(args.pattern, None), args.method_filter)
+    if args.latest is not None:
+        reports = reports[: args.latest]
     aggregate_report_rows = args.aggregate_by_model or args.stability_mode == "robustness"
     if aggregate_report_rows:
         report_rows = _aggregate_report_rows(reports)
@@ -1220,6 +1456,12 @@ def main() -> None:
         render_layout = "wide"
 
     _print_report_table(report_rows, layout=render_layout)
+    ig_reports = [report for report in reports if _report_method(report) == "integrated_gradients"]
+    if ig_reports:
+        _print_deletion_table(
+            _deletion_rows(ig_reports, aggregate=aggregate_report_rows),
+            layout=render_layout,
+        )
     if args.stability_mode == "robustness":
         stability_rows = _evaluate_robustness(reports)
         _print_robustness_table(stability_rows, layout=render_layout)

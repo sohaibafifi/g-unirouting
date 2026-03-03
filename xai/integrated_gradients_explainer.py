@@ -13,13 +13,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import lightning as L
 import torch
 
-
-XAI_DIR = Path(__file__).resolve().parents[1]
-if str(XAI_DIR) not in sys.path:
-    sys.path.insert(0, str(XAI_DIR))
-
-import action_explainer as grad_base  # noqa: E402
-
 IG_BASELINE_MODES = (
     "mean-fill",
     "zero-with-customers-at-depot",
@@ -70,6 +63,7 @@ def _build_ig_baseline(
 
 def _compute_integrated_grads(
     model: Any,
+    grad_base_module: Any,
     state: Any,
     node_features: torch.Tensor,
     global_features: torch.Tensor,
@@ -100,9 +94,11 @@ def _compute_integrated_grads(
         node_interp = (base_node_features + alpha * node_delta).detach().requires_grad_(True)
         global_interp = (base_global_features + alpha * global_delta).detach().requires_grad_(True)
 
-        common = grad_base._build_common(node_interp, global_interp)
-        cache = grad_base._encode_inputs(model, node_interp, global_interp)
-        logits, _, _, _, _ = grad_base._step_logits_and_mask(model, cache, common, state)
+        common = grad_base_module._build_common(node_interp, global_interp)
+        cache = grad_base_module._encode_inputs(model, node_interp, global_interp)
+        logits, _, _, _, _ = grad_base_module._step_logits_and_mask(
+            model, cache, common, state
+        )
 
         selected_logit = _safe_score_gather(logits, action)
         grads = torch.autograd.grad(
@@ -148,6 +144,7 @@ def _compute_integrated_grads(
 
 def _compute_local_contrastive_feature_grads(
     model: Any,
+    grad_base_module: Any,
     state: Any,
     node_features: torch.Tensor,
     global_features: torch.Tensor,
@@ -161,9 +158,11 @@ def _compute_local_contrastive_feature_grads(
 
     node_inputs = node_features.detach().clone().requires_grad_(True)
     global_inputs = global_features.detach().clone().requires_grad_(True)
-    common = grad_base._build_common(node_inputs, global_inputs)
-    cache = grad_base._encode_inputs(model, node_inputs, global_inputs)
-    logits, _, _, _, _ = grad_base._step_logits_and_mask(model, cache, common, state)
+    common = grad_base_module._build_common(node_inputs, global_inputs)
+    cache = grad_base_module._encode_inputs(model, node_inputs, global_inputs)
+    logits, _, _, _, _ = grad_base_module._step_logits_and_mask(
+        model, cache, common, state
+    )
     selected_logit = _safe_score_gather(logits, action)
     alt_logit = _safe_score_gather(logits, alt_action)
     contrastive_target = (selected_logit - alt_logit) * has_alt.float()
@@ -174,7 +173,7 @@ def _compute_local_contrastive_feature_grads(
         create_graph=False,
         allow_unused=True,
     )
-    return grad_base._extract_feature_grads(grads[0], grads[1], selected_features)
+    return grad_base_module._extract_feature_grads(grads[0], grads[1], selected_features)
 
 
 def _simple_step_record(
@@ -217,12 +216,21 @@ def _simple_step_record(
     }
 
 
-def run(args: argparse.Namespace) -> Path:
+def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
+    if grad_base_module is None:
+        XAI_DIR = Path(__file__).resolve().parent
+        if str(XAI_DIR) not in sys.path:
+            sys.path.insert(0, str(XAI_DIR))
+        import action_explainer as grad_base_module  # type: ignore
+
+    grad_base = grad_base_module
     if args.seed is not None:
         L.seed_everything(int(args.seed), workers=True)
 
     config, config_id, checkpoint_path = grad_base._resolve_config(args)
     model = grad_base._load_model(config, checkpoint_path)
+    if bool(getattr(args, "randomize_weights", False)):
+        grad_base._randomize_model_weights(model)
     recourse_enabled = grad_base._is_recourse_decoder(model)
 
     topk_list = grad_base._parse_topk_nodes(args.topk_nodes)
@@ -338,6 +346,7 @@ def run(args: argparse.Namespace) -> Path:
 
         grads, contrastive_grads = _compute_integrated_grads(
             model=model,
+            grad_base_module=grad_base,
             state=state,
             node_features=node_features,
             global_features=global_features,
@@ -598,6 +607,7 @@ def run(args: argparse.Namespace) -> Path:
                 state_slice = grad_base._slice_state(state, i)
                 local_cf_grads = _compute_local_contrastive_feature_grads(
                     model=model,
+                    grad_base_module=grad_base,
                     state=state_slice,
                     node_features=node_features[i : i + 1],
                     global_features=global_features[i : i + 1],

@@ -2145,6 +2145,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--topk-nodes", default="[1,3,5]")
     parser.add_argument(
+        "--attribution-methods",
+        default="gradient,integrated_gradients",
+        help=(
+            "Comma-separated attribution methods to generate. "
+            "Supported: gradient, integrated_gradients. "
+            "Default generates both and writes a bundle JSON."
+        ),
+    )
+    parser.add_argument(
         "--feasibility-weight",
         type=float,
         default=None,
@@ -2169,6 +2178,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--attr-features",
         default="auto",
         help="Comma-separated feature names or 'auto'.",
+    )
+    parser.add_argument(
+        "--ig-steps",
+        type=int,
+        default=50,
+        help="Number of interpolation points used by Integrated Gradients when requested.",
+    )
+    parser.add_argument(
+        "--ig-baseline",
+        choices=[
+            "mean-fill",
+            "zero-with-customers-at-depot",
+            "zero-all",
+            "zero-with-current-locs",
+        ],
+        default="mean-fill",
+        help="Baseline used by Integrated Gradients when requested.",
     )
     parser.add_argument("--device", default=None, help="Device override (cpu, cuda, mps).")
     parser.add_argument("--seed", type=int, default=None)
@@ -2204,11 +2230,120 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_attribution_methods(raw: str) -> List[str]:
+    tokens = [tok.strip().lower() for tok in str(raw).split(",") if tok.strip()]
+    if not tokens:
+        return ["gradient", "integrated_gradients"]
+
+    normalized: List[str] = []
+    for token in tokens:
+        if token in {"gradient", "grad", "saliency", "gradient_local"}:
+            key = "gradient"
+        elif token in {"integrated_gradients", "ig"}:
+            key = "integrated_gradients"
+        else:
+            raise ValueError(
+                f"Unsupported attribution method {token!r}. "
+                "Use 'gradient' and/or 'integrated_gradients'."
+            )
+        if key not in normalized:
+            normalized.append(key)
+    return normalized
+
+
+def _load_ig_module() -> Any:
+    xai_dir = Path(__file__).resolve().parent
+    if str(xai_dir) not in sys.path:
+        sys.path.insert(0, str(xai_dir))
+    import integrated_gradients_explainer as module  # type: ignore
+
+    return module
+
+
+def _build_bundle_report(
+    output_dir: Path,
+    gradient_report_path: Optional[Path],
+    ig_report_path: Optional[Path],
+) -> Optional[Path]:
+    report_paths = {
+        "gradient": gradient_report_path,
+        "integrated_gradients": ig_report_path,
+    }
+    present = {key: value for key, value in report_paths.items() if value is not None}
+    if len(present) <= 1:
+        return None
+
+    payload: Dict[str, Any] = {
+        "kind": "xai_dual_bundle",
+        "timestamp": int(time.time()),
+        "reports": {
+            key: {
+                "path": str(path),
+                "path_resolved": str(path.resolve()),
+            }
+            for key, path in present.items()
+        },
+    }
+
+    model_slug = "bundle"
+    model_label_base = ""
+    config_summary: Dict[str, Any] = {}
+    for key, path in present.items():
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            continue
+        cfg = data.get("config", {}) or {}
+        if not model_label_base:
+            model_label_base = str(cfg.get("model_label_base", "")).strip()
+        if model_slug == "bundle":
+            model_slug = str(cfg.get("model_slug", "")).strip() or model_slug
+        config_summary[key] = {
+            "model_label": cfg.get("model_label"),
+            "attribution_method": cfg.get("attribution_method"),
+            "checkpoint_path": cfg.get("checkpoint_path"),
+            "checkpoint_path_resolved": cfg.get("checkpoint_path_resolved"),
+        }
+
+    if model_label_base:
+        payload["model_label_base"] = model_label_base
+    if config_summary:
+        payload["config"] = config_summary
+
+    bundle_path = output_dir / f"xai_bundle_{_slugify(model_slug)}_{int(time.time())}.json"
+    with bundle_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    print(f"Saved XAI bundle to {bundle_path}")
+    return bundle_path
+
+
+def _run_requested_methods(args: argparse.Namespace) -> Dict[str, Optional[Path]]:
+    methods = _parse_attribution_methods(args.attribution_methods)
+    out: Dict[str, Optional[Path]] = {"gradient": None, "integrated_gradients": None}
+
+    if "gradient" in methods:
+        out["gradient"] = run(args)
+
+    if "integrated_gradients" in methods:
+        ig_module = _load_ig_module()
+        out["integrated_gradients"] = ig_module.run(
+            argparse.Namespace(**vars(args)), grad_base_module=sys.modules[__name__]
+        )
+
+    _build_bundle_report(
+        output_dir=Path(args.output_dir),
+        gradient_report_path=out["gradient"],
+        ig_report_path=out["integrated_gradients"],
+    )
+    return out
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     _preflight_check()
-    run(args)
+    _run_requested_methods(args)
 
 
 if __name__ == "__main__":
