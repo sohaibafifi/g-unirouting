@@ -297,7 +297,7 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
 
         common = grad_base._build_common(node_features, global_features)
         cache = grad_base._encode_inputs(model, node_features, global_features)
-        logits, _, full_mask, logprobs, potential_distance = grad_base._step_logits_and_mask(
+        logits, policy_mask, full_mask, logprobs, potential_distance = grad_base._step_logits_and_mask(
             model, cache, common, state
         )
 
@@ -305,6 +305,17 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
         selected_logit = _safe_score_gather(logits, action)
         selected_logprob = _safe_score_gather(logprobs, action)
 
+        (
+            alt_action_policy,
+            has_alt_policy,
+            alt_logit_policy,
+            alt_logprob_policy,
+        ) = grad_base._select_best_alternative(
+            logits=logits,
+            logprobs=logprobs,
+            chosen_action=action,
+            action_mask=~policy_mask,
+        )
         (
             alt_action,
             has_alt,
@@ -318,6 +329,8 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
         )
         contrastive_logit_gap = selected_logit - _safe_score_gather(logits, alt_action)
         contrastive_logprob_gap = selected_logprob - _safe_score_gather(logprobs, alt_action)
+        contrastive_logit_gap_policy = selected_logit - alt_logit_policy
+        contrastive_logprob_gap_policy = selected_logprob - alt_logprob_policy
         contrastive_alt_available_history.append(float(has_alt.float().mean().item()))
         contrastive_logit_gap_history.append(
             grad_base._masked_mean(contrastive_logit_gap.detach(), has_alt)
@@ -343,6 +356,15 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
             ~full_mask.gather(1, alt_action.unsqueeze(-1)).squeeze(-1)
         ) & has_alt
         alt_recourse_flags = has_alt & recourse_enabled & (alt_action != 0) & (~alt_action_feasible)
+        alt_action_policy_feasible = (
+            ~full_mask.gather(1, alt_action_policy.unsqueeze(-1)).squeeze(-1)
+        ) & has_alt_policy
+        alt_recourse_flags_policy = (
+            has_alt_policy
+            & recourse_enabled
+            & (alt_action_policy != 0)
+            & (~alt_action_policy_feasible)
+        )
 
         grads, contrastive_grads = _compute_integrated_grads(
             model=model,
@@ -514,6 +536,22 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
             step_top_valid = top_nodes_valid_all[:num_store].detach().cpu().tolist()
             alt_action_store = alt_action[:num_store].detach().cpu().tolist()
             has_alt_store = has_alt[:num_store].detach().cpu().tolist()
+            alt_action_policy_store = (
+                alt_action_policy[:num_store].detach().cpu().tolist()
+            )
+            has_alt_policy_store = has_alt_policy[:num_store].detach().cpu().tolist()
+            alt_action_policy_feasible_store = (
+                alt_action_policy_feasible[:num_store].detach().cpu().tolist()
+            )
+            alt_recourse_policy_store = (
+                alt_recourse_flags_policy[:num_store].detach().cpu().tolist()
+            )
+            contrastive_logit_gap_policy_store = (
+                contrastive_logit_gap_policy[:num_store].detach().cpu().tolist()
+            )
+            contrastive_logprob_gap_policy_store = (
+                contrastive_logprob_gap_policy[:num_store].detach().cpu().tolist()
+            )
             alt_feasible_store = alt_action_feasible[:num_store].detach().cpu().tolist()
             alt_recourse_store = alt_recourse_flags[:num_store].detach().cpu().tolist()
             contrastive_logit_gap_store = (
@@ -575,6 +613,50 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
                 instance_traces[i]["top_scores_feasibility"].append([])
                 instance_traces[i]["top_features"].append(inst_top_features)
                 instance_traces[i]["top_constraints"].append(inst_top_constraints)
+                if has_alt_policy_store[i]:
+                    instance_traces[i]["contrastive_policy_alt_action"].append(
+                        int(alt_action_policy_store[i])
+                    )
+                    instance_traces[i]["contrastive_policy_alt_feasible"].append(
+                        bool(alt_action_policy_feasible_store[i])
+                    )
+                    instance_traces[i]["contrastive_policy_alt_recourse"].append(
+                        bool(alt_recourse_policy_store[i])
+                    )
+                    instance_traces[i]["contrastive_policy_logit_gap"].append(
+                        float(contrastive_logit_gap_policy_store[i])
+                    )
+                    instance_traces[i]["contrastive_policy_logprob_gap"].append(
+                        float(contrastive_logprob_gap_policy_store[i])
+                    )
+                else:
+                    instance_traces[i]["contrastive_policy_alt_action"].append(-1)
+                    instance_traces[i]["contrastive_policy_alt_feasible"].append(False)
+                    instance_traces[i]["contrastive_policy_alt_recourse"].append(False)
+                    instance_traces[i]["contrastive_policy_logit_gap"].append(float("nan"))
+                    instance_traces[i]["contrastive_policy_logprob_gap"].append(float("nan"))
+                if has_alt_store[i]:
+                    instance_traces[i]["contrastive_feasible_alt_action"].append(
+                        int(alt_action_store[i])
+                    )
+                    instance_traces[i]["contrastive_feasible_alt_feasible"].append(
+                        bool(alt_feasible_store[i])
+                    )
+                    instance_traces[i]["contrastive_feasible_alt_recourse"].append(
+                        bool(alt_recourse_store[i])
+                    )
+                    instance_traces[i]["contrastive_feasible_logit_gap"].append(
+                        float(contrastive_logit_gap_store[i])
+                    )
+                    instance_traces[i]["contrastive_feasible_logprob_gap"].append(
+                        float(contrastive_logprob_gap_store[i])
+                    )
+                else:
+                    instance_traces[i]["contrastive_feasible_alt_action"].append(-1)
+                    instance_traces[i]["contrastive_feasible_alt_feasible"].append(False)
+                    instance_traces[i]["contrastive_feasible_alt_recourse"].append(False)
+                    instance_traces[i]["contrastive_feasible_logit_gap"].append(float("nan"))
+                    instance_traces[i]["contrastive_feasible_logprob_gap"].append(float("nan"))
                 if has_alt_store[i]:
                     instance_traces[i]["contrastive_alt_action"].append(int(alt_action_store[i]))
                     instance_traces[i]["contrastive_alt_source"].append("full_feasible")

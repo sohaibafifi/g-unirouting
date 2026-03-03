@@ -214,7 +214,37 @@ def _contrastive_source_label(source: str) -> str:
         return "alternative faisable"
     if source == "policy_masked":
         return "alternative masque politique"
+    if source == "policy_next":
+        return "alternative de politique"
+    if source == "strictly_feasible":
+        return "alternative strictement faisable"
     return "aucune alternative"
+
+
+def _format_contrastive_alternative(
+    title: str,
+    alt_action: int,
+    alt_feasible: bool,
+    alt_recourse: bool,
+    logit_gap: float,
+    logprob_gap: float,
+    constraints_suffix: str | None = None,
+) -> List[str]:
+    if alt_action < 0:
+        return []
+    alt_label = "depot" if alt_action == 0 else f"noeud {alt_action}"
+    chunks = [f"{title}: {alt_label}"]
+    if np.isfinite(logit_gap):
+        chunks.append(f"marge logit {logit_gap:+.3f}")
+    if np.isfinite(logprob_gap):
+        chunks.append(f"marge logprob {logprob_gap:+.3f}")
+    if not alt_feasible and alt_action > 0:
+        chunks.append("non faisable sous contraintes complètes")
+    if alt_recourse:
+        chunks.append("impliquerait recours")
+    if constraints_suffix:
+        chunks.append(constraints_suffix)
+    return [", ".join(chunks)]
 
 
 def _format_variant_constraints(active_constraints: List[str]) -> str:
@@ -676,6 +706,32 @@ def explain_step_structured(trace: dict, step: int) -> dict:
     top_scores_feas_all = trace.get("top_scores_feasibility", [])
     top_features_all = trace.get("top_features", [])
     top_constraints_all = trace.get("top_constraints", [])
+    contrastive_policy_alt_action_all = trace.get("contrastive_policy_alt_action", [])
+    contrastive_policy_alt_feasible_all = trace.get(
+        "contrastive_policy_alt_feasible", []
+    )
+    contrastive_policy_alt_recourse_all = trace.get(
+        "contrastive_policy_alt_recourse", []
+    )
+    contrastive_policy_logit_gap_all = trace.get("contrastive_policy_logit_gap", [])
+    contrastive_policy_logprob_gap_all = trace.get(
+        "contrastive_policy_logprob_gap", []
+    )
+    contrastive_feasible_alt_action_all = trace.get(
+        "contrastive_feasible_alt_action", []
+    )
+    contrastive_feasible_alt_feasible_all = trace.get(
+        "contrastive_feasible_alt_feasible", []
+    )
+    contrastive_feasible_alt_recourse_all = trace.get(
+        "contrastive_feasible_alt_recourse", []
+    )
+    contrastive_feasible_logit_gap_all = trace.get(
+        "contrastive_feasible_logit_gap", []
+    )
+    contrastive_feasible_logprob_gap_all = trace.get(
+        "contrastive_feasible_logprob_gap", []
+    )
     contrastive_alt_action_all = trace.get("contrastive_alt_action", [])
     contrastive_alt_source_all = trace.get("contrastive_alt_source", [])
     contrastive_alt_feasible_all = trace.get("contrastive_alt_feasible", [])
@@ -717,6 +773,56 @@ def explain_step_structured(trace: dict, step: int) -> dict:
     )
     top_features = top_features_all[step] if step < len(top_features_all) else []
     top_constraints = top_constraints_all[step] if step < len(top_constraints_all) else []
+    contrastive_policy_alt_action = (
+        int(contrastive_policy_alt_action_all[step])
+        if step < len(contrastive_policy_alt_action_all)
+        else -1
+    )
+    contrastive_policy_alt_feasible = (
+        bool(contrastive_policy_alt_feasible_all[step])
+        if step < len(contrastive_policy_alt_feasible_all)
+        else False
+    )
+    contrastive_policy_alt_recourse = (
+        bool(contrastive_policy_alt_recourse_all[step])
+        if step < len(contrastive_policy_alt_recourse_all)
+        else False
+    )
+    contrastive_policy_logit_gap = (
+        float(contrastive_policy_logit_gap_all[step])
+        if step < len(contrastive_policy_logit_gap_all)
+        else float("nan")
+    )
+    contrastive_policy_logprob_gap = (
+        float(contrastive_policy_logprob_gap_all[step])
+        if step < len(contrastive_policy_logprob_gap_all)
+        else float("nan")
+    )
+    contrastive_feasible_alt_action = (
+        int(contrastive_feasible_alt_action_all[step])
+        if step < len(contrastive_feasible_alt_action_all)
+        else -1
+    )
+    contrastive_feasible_alt_feasible = (
+        bool(contrastive_feasible_alt_feasible_all[step])
+        if step < len(contrastive_feasible_alt_feasible_all)
+        else False
+    )
+    contrastive_feasible_alt_recourse = (
+        bool(contrastive_feasible_alt_recourse_all[step])
+        if step < len(contrastive_feasible_alt_recourse_all)
+        else False
+    )
+    contrastive_feasible_logit_gap = (
+        float(contrastive_feasible_logit_gap_all[step])
+        if step < len(contrastive_feasible_logit_gap_all)
+        else float("nan")
+    )
+    contrastive_feasible_logprob_gap = (
+        float(contrastive_feasible_logprob_gap_all[step])
+        if step < len(contrastive_feasible_logprob_gap_all)
+        else float("nan")
+    )
     contrastive_alt_action = (
         int(contrastive_alt_action_all[step])
         if step < len(contrastive_alt_action_all)
@@ -784,27 +890,65 @@ def explain_step_structured(trace: dict, step: int) -> dict:
                 logit_gap=contrastive_logit_gap,
             )
         )
-        alt_label = (
-            "depot" if contrastive_alt_action == 0 else f"noeud {contrastive_alt_action}"
-        )
-        contrastive_chunks = [
-            f"vs {alt_label} ({_contrastive_source_label(contrastive_alt_source)})"
-        ]
-        if np.isfinite(contrastive_logit_gap):
-            contrastive_chunks.append(f"marge logit {contrastive_logit_gap:+.3f}")
-        if np.isfinite(contrastive_logprob_gap):
-            contrastive_chunks.append(f"marge logprob {contrastive_logprob_gap:+.3f}")
+        primary_constraints_suffix = None
         if contrastive_top_constraints:
-            contrastive_chunks.append(
-                f"contraintes qui départagent: {_format_top_constraints(contrastive_top_constraints)}"
+            primary_constraints_suffix = (
+                "contraintes qui départagent (comparaison principale): "
+                f"{_format_top_constraints(contrastive_top_constraints)}"
             )
-        if not contrastive_alt_feasible and contrastive_alt_action > 0:
-            contrastive_chunks.append(
-                "alternative non faisable sous contraintes complètes"
+        if contrastive_policy_alt_action >= 0:
+            contrastive_items.extend(
+                _format_contrastive_alternative(
+                    title="Alternative de politique (2e meilleur score)",
+                    alt_action=contrastive_policy_alt_action,
+                    alt_feasible=contrastive_policy_alt_feasible,
+                    alt_recourse=contrastive_policy_alt_recourse,
+                    logit_gap=contrastive_policy_logit_gap,
+                    logprob_gap=contrastive_policy_logprob_gap,
+                    constraints_suffix=(
+                        primary_constraints_suffix
+                        if (
+                            contrastive_alt_source == "policy_masked"
+                            or contrastive_feasible_alt_action == contrastive_policy_alt_action
+                        )
+                        else None
+                    ),
+                )
             )
-        if contrastive_alt_recourse:
-            contrastive_chunks.append("alternative impliquerait recours")
-        contrastive_items.append(", ".join(contrastive_chunks))
+        if (
+            contrastive_feasible_alt_action >= 0
+            and contrastive_feasible_alt_action != contrastive_policy_alt_action
+        ):
+            contrastive_items.extend(
+                _format_contrastive_alternative(
+                    title="Alternative strictement faisable (sans recours)",
+                    alt_action=contrastive_feasible_alt_action,
+                    alt_feasible=contrastive_feasible_alt_feasible,
+                    alt_recourse=contrastive_feasible_alt_recourse,
+                    logit_gap=contrastive_feasible_logit_gap,
+                    logprob_gap=contrastive_feasible_logprob_gap,
+                    constraints_suffix=(
+                        primary_constraints_suffix
+                        if contrastive_alt_source == "full_feasible"
+                        else None
+                    ),
+                )
+            )
+        if (
+            contrastive_policy_alt_action < 0
+            and contrastive_feasible_alt_action < 0
+        ):
+            contrastive_items.extend(
+                _format_contrastive_alternative(
+                    title=f"Comparaison principale ({_contrastive_source_label(contrastive_alt_source)})",
+                    alt_action=contrastive_alt_action,
+                    alt_feasible=contrastive_alt_feasible,
+                    alt_recourse=contrastive_alt_recourse,
+                    logit_gap=contrastive_logit_gap,
+                    logprob_gap=contrastive_logprob_gap,
+                    constraints_suffix=primary_constraints_suffix,
+                )
+            )
     if top_features:
         abductive_items.append(f"Features dominantes: {_format_top_features(top_features)}")
     feas_rank = _rank_in_top(chosen, top_nodes_feas)
@@ -816,11 +960,11 @@ def explain_step_structured(trace: dict, step: int) -> dict:
         )
         if feas_score is None:
             abductive_items.append(
-                f"Noeud choisi aussi important pour la faisabilité (rang {feas_rank})"
+                f"Noeud choisi aussi central dans l'analyse faisabilité/recours (rang {feas_rank})"
             )
         elif abs(float(feas_score)) > 1e-12:
             abductive_items.append(
-                f"Noeud choisi aussi important pour la faisabilité (rang {feas_rank}, score {feas_score:.3f})"
+                f"Noeud choisi aussi central dans l'analyse faisabilité/recours (rang {feas_rank}, score {feas_score:.3f})"
             )
     if not chosen_feasible and chosen > 0:
         abductive_items.append("Action choisie non faisable avant recours")
@@ -1045,6 +1189,7 @@ def _render_single_report_lines(
     instance_index: int,
     steps_raw: str | None,
     heading_prefix: str = "##",
+    include_report_trajectory: bool = False,
 ) -> Tuple[List[str], int]:
     instances = report.get("instances", [])
     if not instances:
@@ -1082,14 +1227,21 @@ def _render_single_report_lines(
         )
     lines.append("")
 
-    trajectory_items = _format_report_trajectory(report.get("summary", {}) or {})
-    trajectory_items.extend(
-        _summarize_trace_trajectory(trace, include_reading=not bool(trajectory_items))
-    )
-    if trajectory_items:
-        lines.append(f"{heading_prefix} Trajectoire globale")
+    report_trajectory_items = _format_report_trajectory(report.get("summary", {}) or {})
+    if include_report_trajectory and report_trajectory_items:
+        lines.append(f"{heading_prefix} Repères globaux du rapport")
         lines.append("")
-        for item in trajectory_items:
+        for item in report_trajectory_items:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    instance_trajectory_items = _summarize_trace_trajectory(
+        trace, include_reading=True
+    )
+    if instance_trajectory_items:
+        lines.append(f"{heading_prefix} Trajectoire de l'instance")
+        lines.append("")
+        for item in instance_trajectory_items:
             lines.append(f"- {item}")
         lines.append("")
 
