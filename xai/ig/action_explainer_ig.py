@@ -146,6 +146,37 @@ def _compute_integrated_grads(
     return (ig_node, ig_global), (ig_contrastive_node, ig_contrastive_global)
 
 
+def _compute_local_contrastive_feature_grads(
+    model: Any,
+    state: Any,
+    node_features: torch.Tensor,
+    global_features: torch.Tensor,
+    action: torch.Tensor,
+    alt_action: torch.Tensor,
+    has_alt: torch.Tensor,
+    selected_features: Sequence[str],
+) -> Dict[str, Optional[torch.Tensor]]:
+    if not bool(has_alt.any().item()):
+        return {}
+
+    node_inputs = node_features.detach().clone().requires_grad_(True)
+    global_inputs = global_features.detach().clone().requires_grad_(True)
+    common = grad_base._build_common(node_inputs, global_inputs)
+    cache = grad_base._encode_inputs(model, node_inputs, global_inputs)
+    logits, _, _, _, _ = grad_base._step_logits_and_mask(model, cache, common, state)
+    selected_logit = _safe_score_gather(logits, action)
+    alt_logit = _safe_score_gather(logits, alt_action)
+    contrastive_target = (selected_logit - alt_logit) * has_alt.float()
+    grads = torch.autograd.grad(
+        outputs=contrastive_target.sum(),
+        inputs=[node_inputs, global_inputs],
+        retain_graph=False,
+        create_graph=False,
+        allow_unused=True,
+    )
+    return grad_base._extract_feature_grads(grads[0], grads[1], selected_features)
+
+
 def _simple_step_record(
     step: int,
     action: torch.Tensor,
@@ -238,6 +269,12 @@ def run(args: argparse.Namespace) -> Path:
     recourse_rate_history: List[float] = []
     recourse_cost_est_history: List[float] = []
     chosen_feasible_rate_history: List[float] = []
+    counterfactual_available_history: List[float] = []
+    counterfactual_switch_history: List[float] = []
+    counterfactual_make_feasible_history: List[float] = []
+    counterfactual_approximate_history: List[float] = []
+    counterfactual_relative_delta_history: List[float] = []
+    counterfactual_by_feature: Dict[str, List[float]] = defaultdict(list)
 
     step_records: List[Dict[str, Any]] = []
     state = grad_base._init_state(grad_base._build_common(node_features, global_features))
@@ -558,7 +595,55 @@ def run(args: argparse.Namespace) -> Path:
                 instance_traces[i]["chosen_feasible"].append(bool(action_feasible_store[i]))
                 instance_traces[i]["recourse_triggered"].append(bool(recourse_store[i]))
                 instance_traces[i]["recourse_cost_est"].append(float(recourse_cost_store[i]))
-                instance_traces[i]["counterfactuals"].append(None)
+                state_slice = grad_base._slice_state(state, i)
+                local_cf_grads = _compute_local_contrastive_feature_grads(
+                    model=model,
+                    state=state_slice,
+                    node_features=node_features[i : i + 1],
+                    global_features=global_features[i : i + 1],
+                    action=action[i : i + 1].detach(),
+                    alt_action=alt_action[i : i + 1].detach(),
+                    has_alt=has_alt[i : i + 1].detach(),
+                    selected_features=selected_features,
+                )
+                counterfactual_payload = grad_base._propose_counterfactual(
+                    model=model,
+                    node_features=node_features[i : i + 1],
+                    global_features=global_features[i : i + 1],
+                    state=state_slice,
+                    batch_index=0,
+                    alt_action=int(alt_action_store[i]),
+                    has_alt=bool(has_alt_store[i]),
+                    contrastive_logit_gap=float(contrastive_logit_gap_store[i]),
+                    contrastive_grad_by_feature=local_cf_grads,
+                    full_mask=full_mask[i : i + 1].detach(),
+                    recourse_enabled=recourse_enabled,
+                )
+                if counterfactual_payload is None:
+                    counterfactual_available_history.append(0.0)
+                    counterfactual_switch_history.append(0.0)
+                    counterfactual_make_feasible_history.append(0.0)
+                    counterfactual_approximate_history.append(0.0)
+                else:
+                    status = str(counterfactual_payload.get("status", "approximate"))
+                    feature_name = str(counterfactual_payload.get("feature", "unknown"))
+                    counterfactual_available_history.append(1.0)
+                    counterfactual_switch_history.append(1.0 if status == "switch" else 0.0)
+                    counterfactual_make_feasible_history.append(
+                        1.0 if status == "make_feasible" else 0.0
+                    )
+                    counterfactual_approximate_history.append(
+                        1.0 if status == "approximate" else 0.0
+                    )
+                    rel_delta = counterfactual_payload.get("relative_delta", None)
+                    try:
+                        rel_delta_val = float(rel_delta)
+                    except (TypeError, ValueError):
+                        rel_delta_val = float("nan")
+                    if math.isfinite(rel_delta_val):
+                        counterfactual_relative_delta_history.append(rel_delta_val)
+                    counterfactual_by_feature[feature_name].append(1.0)
+                instance_traces[i]["counterfactuals"].append(counterfactual_payload)
 
         state = next_state
 
@@ -605,12 +690,19 @@ def run(args: argparse.Namespace) -> Path:
             },
         },
         "counterfactuals": {
-            "available_rate": 0.0,
-            "switch_rate": 0.0,
-            "make_feasible_rate": 0.0,
-            "approximate_rate": 0.0,
-            "mean_relative_delta": 0.0,
-            "feature_frequency": {},
+            "available_rate": grad_base._safe_mean(counterfactual_available_history),
+            "switch_rate": grad_base._safe_mean(counterfactual_switch_history),
+            "make_feasible_rate": grad_base._safe_mean(
+                counterfactual_make_feasible_history
+            ),
+            "approximate_rate": grad_base._safe_mean(counterfactual_approximate_history),
+            "mean_relative_delta": grad_base._safe_mean(
+                counterfactual_relative_delta_history
+            ),
+            "feature_frequency": {
+                key: grad_base._safe_mean(counterfactual_by_feature[key])
+                for key in sorted(counterfactual_by_feature.keys())
+            },
             "feature_share": {},
         },
         "trajectory": trajectory_summary,
@@ -641,6 +733,11 @@ def run(args: argparse.Namespace) -> Path:
     summary["contrastive"]["constraint_importance_share"] = {
         key: (value / contrastive_constraint_total if contrastive_constraint_total > 0 else 0.0)
         for key, value in summary["contrastive"]["constraint_importance_mean"].items()
+    }
+    cf_total = sum(summary["counterfactuals"]["feature_frequency"].values())
+    summary["counterfactuals"]["feature_share"] = {
+        key: (value / cf_total if cf_total > 0 else 0.0)
+        for key, value in summary["counterfactuals"]["feature_frequency"].items()
     }
 
     run_name = repr(config)
