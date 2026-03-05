@@ -1,11 +1,71 @@
-from abc import ABC, abstractmethod
+from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Dict, Optional
+
+import torch
 import torch.distributions
 import torch.nn
 from torch.distributions import Categorical
 
+if TYPE_CHECKING:
+    from mavrp.env.decoders.types import DecodeCache, DecodeState, StepResult
+
 
 class DecoderBase(torch.nn.Module, ABC):
+
+    def initial_hidden(self, cache: DecodeCache) -> Optional[torch.Tensor]:
+        """Return initial GRU hidden state, or None for non-recurrent decoders."""
+        return None
+
+    def init_decode_state(
+        self,
+        common: Dict[str, torch.Tensor],
+        cache: Optional[DecodeCache] = None,
+    ) -> DecodeState:
+        """Build the initial DecodeState from pre-computed common tensors."""
+        from mavrp.env.decoders.types import DecodeState
+
+        batch_size, seq_len = common["demands"].shape
+        device = common["demands"].device
+        current_node = torch.zeros(batch_size, dtype=torch.long, device=device)
+        not_served = torch.ones((batch_size, seq_len), dtype=torch.bool, device=device)
+        not_served[:, 0] = False
+        leave_time = common["earliest_start_time"][:, 0].unsqueeze(1).clone()
+        zeros = torch.zeros((batch_size, 1), dtype=common["demands"].dtype, device=device)
+        return DecodeState(
+            current_node=current_node,
+            not_served=not_served,
+            leave_time=leave_time,
+            deliveries=zeros.clone(),
+            pickups=zeros.clone(),
+            distance=zeros.clone(),
+            total_distance=zeros.clone(),
+            is_depot=torch.ones(batch_size, dtype=torch.bool, device=device),
+            hidden=self.initial_hidden(cache) if cache is not None else None,
+        )
+
+    @abstractmethod
+    def step_logits(
+        self,
+        cache: DecodeCache,
+        common: Dict[str, torch.Tensor],
+        state: DecodeState,
+    ) -> StepResult:
+        """Compute logits, masks and log-probs for one decode step without advancing state."""
+
+    @abstractmethod
+    def step_update(
+        self,
+        common: Dict[str, torch.Tensor],
+        state: DecodeState,
+        selected_node: torch.Tensor,
+        step_result: StepResult,
+    ) -> DecodeState:
+        """Return new DecodeState after committing selected_node."""
+
+    # ------------------------------------------------------------------
+
     @abstractmethod
     def forward(self,
                 inputs: torch.Tensor,

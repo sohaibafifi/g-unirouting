@@ -1,10 +1,12 @@
-from typing import Optional
+from typing import Dict, Optional
 
+import torch
 import torch.nn
 import torch_geometric.utils
 
 from mavrp.env.decoders.base import DecoderBase
 from mavrp.env.decoders.pointer import PointerAttention
+from mavrp.env.decoders.types import DecodeCache, DecodeState, StepResult
 from mavrp.env.mixins import FreezingMixin
 
 
@@ -31,8 +33,6 @@ class EndToEndDecoder(DecoderBase, FreezingMixin):
         else:
             self.edge_distance_scale = None
 
-
-        # Edge attention scaling (if provided in config)
         if self.config.use_edge_attn:
             self.edge_attn_scale = torch.nn.Parameter(torch.tensor(1.0, device=self.config.device))
         else:
@@ -44,6 +44,129 @@ class EndToEndDecoder(DecoderBase, FreezingMixin):
             torch.nn.init.xavier_uniform_(self.q_global.weight)
         self.glimpse.reset_parameters()
 
+    # ------------------------------------------------------------------
+    # Step-level API
+    # ------------------------------------------------------------------
+
+    def step_logits(
+        self,
+        cache: DecodeCache,
+        common: Dict[str, torch.Tensor],
+        state: DecodeState,
+    ) -> StepResult:
+        from mavrp.env.decoders.ops import compute_action_masks
+
+        batch_size = state.current_node.size(0)
+        device = state.current_node.device
+        batch_indices = torch.arange(batch_size, device=device)
+        current = state.current_node
+
+        policy_mask, full_mask, potential_distance = compute_action_masks(
+            common, state, recourse_enabled=False
+        )
+
+        last = cache.node_embeddings[batch_indices, current].unsqueeze(1)  # [B, 1, E]
+
+        remaining_distance = torch.nan_to_num(
+            common["distance_limits"] - state.distance, posinf=10.0
+        )  # [B, 1]
+        remaining_demand = common["capacities"] - state.deliveries        # [B, 1]
+        remaining_demand_b = common["capacities"] - state.pickups         # [B, 1]
+        distance_to_depot = torch.nan_to_num(
+            common["deltas"][batch_indices, current, 0], posinf=1e9
+        ).unsqueeze(-1)  # [B, 1]
+
+        data = torch.cat((
+            last.squeeze(1),                              # [B, E]
+            state.leave_time,                             # [B, 1]
+            remaining_distance,                           # [B, 1]
+            remaining_demand,                             # [B, 1]
+            remaining_demand_b,                           # [B, 1]
+            distance_to_depot,                            # [B, 1]
+            common["open_routes"].unsqueeze(-1),          # [B, 1]
+            common["mixed_backhauls"].unsqueeze(-1),      # [B, 1]
+        ), dim=-1)
+
+        dynamic_context = self.dynamic_context_embedding(data)   # [B, E]
+        h_c = cache.q_global + dynamic_context.unsqueeze(1)      # [B, 1, E]
+
+        dist_feat = common["deltas"][batch_indices, current].unsqueeze(-1)  # [B, N, 1]
+        logits = self.glimpse(h_c, policy_mask, dist=dist_feat)  # [B, N]
+
+        if self.edge_distance_scale is not None:
+            logits = logits - self.edge_distance_scale * common["deltas"][batch_indices, current]
+
+        if cache.attn_matrix is not None and self.edge_attn_scale is not None:
+            logits = logits + self.edge_attn_scale * cache.attn_matrix[batch_indices, current]
+
+        logits = logits.masked_fill(policy_mask, float("-inf"))
+        logprobs = torch.log_softmax(logits, dim=-1)
+
+        return StepResult(
+            logits=logits,
+            policy_mask=policy_mask,
+            full_mask=full_mask,
+            logprobs=logprobs,
+            potential_distance=potential_distance,
+        )
+
+    def step_update(
+        self,
+        common: Dict[str, torch.Tensor],
+        state: DecodeState,
+        selected_node: torch.Tensor,
+        step_result: StepResult,
+    ) -> DecodeState:
+        batch_size = selected_node.size(0)
+        device = selected_node.device
+        batch_indices = torch.arange(batch_size, device=device)
+
+        # Mark selected as visited
+        not_served = state.not_served.clone()
+        not_served[batch_indices, selected_node] = False
+
+        # Update accumulated demands
+        deliveries = state.deliveries + common["demands"][batch_indices, selected_node].unsqueeze(1)
+        pickups = state.pickups + common["demands_b"][batch_indices, selected_node].unsqueeze(1)
+
+        # Update route distance (gather from pre-computed potential_distance)
+        distance = step_result.potential_distance.gather(1, selected_node.unsqueeze(1))  # [B, 1]
+
+        # Update leave_time
+        arrival = state.leave_time.squeeze(1) + common["deltas"][batch_indices, state.current_node, selected_node]
+        selected_earliest = common["earliest_start_time"][batch_indices, selected_node]
+        start_time = torch.maximum(arrival, selected_earliest)
+        service = common["services"][batch_indices, selected_node]
+        leave_time = (start_time + service).unsqueeze(1)  # [B, 1]
+
+        is_depot = (selected_node == 0)
+
+        # Non-depot selections: keep depot alive in not_served so the loop continues
+        not_served[~is_depot, 0] = True
+
+        # Depot selection: accumulate total_distance and reset route state
+        total_distance = state.total_distance.clone()
+        return_dist = common["deltas"][batch_indices, selected_node, 0].unsqueeze(1)  # [B, 1]; = 0 when selected=depot
+        total_distance[is_depot] = total_distance[is_depot] + distance[is_depot] + return_dist[is_depot]
+        deliveries[is_depot] = 0
+        pickups[is_depot] = 0
+        distance[is_depot] = 0
+        leave_time[is_depot] = common["earliest_start_time"][is_depot, 0].unsqueeze(1)
+
+        return DecodeState(
+            current_node=selected_node,
+            not_served=not_served,
+            leave_time=leave_time,
+            deliveries=deliveries,
+            pickups=pickups,
+            distance=distance,
+            total_distance=total_distance,
+            is_depot=is_depot,
+            hidden=None,
+        )
+
+    # ------------------------------------------------------------------
+
     def forward(self, inputs: tuple[torch.Tensor, torch.Tensor],
                 node_embeddings: torch.Tensor,
                 global_embeddings: torch.Tensor,
@@ -52,8 +175,12 @@ class EndToEndDecoder(DecoderBase, FreezingMixin):
                 edge_index: Optional[torch.Tensor] = None,
                 edge_attn_scores: Optional[torch.Tensor] = None,
                 ):
-        batch_size, seq_len, embedding_dim = node_embeddings.size()  # seq_len = nb_clients + nb_depot (1)
+        from mavrp.env.decoders.ops import build_common
+
+        batch_size, seq_len, _ = node_embeddings.size()
         device = node_embeddings.device
+
+        # Build dense edge-attention matrix (optional)
         attn_matrix = None
         if self.edge_attn_scale is not None:
             # Note: TorchScript doesn't support assert with messages
@@ -64,142 +191,37 @@ class EndToEndDecoder(DecoderBase, FreezingMixin):
             edge_scores = edge_attn_scores.mean(-1) if edge_attn_scores.dim() > 1 else edge_attn_scores
             # create a [batch_size, seq_len, seq_len] attention matrix
             batch_vec = torch.arange(batch_size, device=device).repeat_interleave(seq_len)
-            attn_matrix = torch_geometric.utils.to_dense_adj(edge_index=edge_index, edge_attr=edge_scores, batch=batch_vec)
+            attn_matrix = torch_geometric.utils.to_dense_adj(
+                edge_index=edge_index, edge_attr=edge_scores, batch=batch_vec
+            )
 
-        node_features, global_features = inputs
-        locations = node_features[:, :, :2]
-        demands = node_features[:, :, 2]
-        demands_b = node_features[:, :, 3]
-        time_windows = node_features[:, :, 4:6]
-        services = node_features[:, :, 6]
-        capacities = global_features[:, 0].unsqueeze(1)
-        open_routes = global_features[:, 1].to(torch.bool)
-        mixed_backhauls = global_features[:, 2].to(torch.bool)
-        distance_limits = global_features[:, 3].unsqueeze(1)
-        time_limits = global_features[:, 4].unsqueeze(1)
-        deltas = torch.cdist(locations, locations)
-        # for b in range(deltas.size(0)):
-        #     deltas[b].fill_diagonal_(float('inf'))
-        # deltas[:, 0, 0] = 0.0  # important since SolutionDecoder generates empty routes
-        # set deltas[:, :, 0] = 0.0 if open_routes is > 0.5
-        deltas[open_routes, :, 0] = 0.0
-
-        # if backhauls sum > 0 and not mixed_backhauls linehauls must be served before backhauls.
-        # So set a high value from backhaul to linehaul (avoiding linehaul after backhaul clients).
-        backhauls_instances = (torch.sum(demands_b, dim=-1) > 0) & (~mixed_backhauls)
-        backhauls_instances = backhauls_instances.unsqueeze(-1).expand_as(demands_b)
-        backhauls_mask = (demands_b > 0) & backhauls_instances  # [batch_size, seq_len], True where node is backhaul
-        linehauls_mask = (demands > 0) & backhauls_instances  # [batch_size, seq_len], True where node is linehaul
-
-        invalid_arcs = backhauls_mask.unsqueeze(-1) & linehauls_mask.unsqueeze(1)
-        # instead of deltas[invalid_mask] = 1e9
-        # b_idx, i_idx, j_idx = torch.where(invalid_arcs)
-        # deltas[b_idx, i_idx, j_idx] = float('inf')
-
+        # Pre-compute problem tensors and build encoder cache
+        common = build_common(inputs[0], inputs[1])
         h_hat = global_embeddings.unsqueeze(1)
-        if self.q_global is not None:
-            q_g = self.q_global(h_hat)  # [B,1,E]
-        else:
-            q_g = 0
-        not_served = torch.ones_like(demands, dtype=torch.bool)
+        q_g = self.q_global(h_hat) if self.q_global is not None else 0
+        cache = DecodeCache(
+            node_embeddings=node_embeddings,
+            global_embeddings=global_embeddings,
+            q_global=q_g,
+            attn_matrix=attn_matrix,
+        )
+        self.glimpse.precalculate(node_embeddings)
 
-        # Initialize solution
+        # Initialize decode state (current_node=0, not_served[:,0]=False)
+        state = self.init_decode_state(common, cache)
+
         if actions is None or actions.size(1) < 1:
             solution = torch.zeros([batch_size, 1], dtype=torch.long, device=device)
         else:
-            solution = actions[:, :1]
-        batch_indices = torch.arange(batch_size, device=device)
-        not_served[batch_indices, solution[:, -1]] = False
+            solution = actions[:, :1].clone()
 
         log_probabilities = torch.zeros(batch_size, dtype=torch.float32, device=device)
 
-        earliest_start_time, latest_start_time = time_windows.unbind(-1)  # [batch_size, seq_len]
-        # set latest start time of depot to inf  when open_routes is True
-        # latest_start_time[open_routes, 0] = float('inf') # in place operation, don't
-        latest_start_time = torch.where(open_routes.unsqueeze(-1), float('inf'), latest_start_time)
-        leave_time = earliest_start_time[:, 0].view(-1, 1)  # [batch_size, 1, 1]
-        deliveries = torch.zeros_like(leave_time)
-        pickups = torch.zeros_like(leave_time)
-
-        distance = torch.zeros_like(leave_time)
-        total_distance = torch.zeros_like(leave_time)
-        is_depot = torch.full((batch_size,), True, dtype=torch.bool, device=node_embeddings.device)
-        has_demand_b = torch.sum(demands_b, dim=-1, keepdim=True) > 0
-        open_routes = open_routes.unsqueeze(-1)
-        mixed_backhauls = mixed_backhauls.unsqueeze(-1)
-
-        self.glimpse.precalculate(node_embeddings)
-
-        while not_served.any():
-            potential_arrival_times = leave_time + deltas[batch_indices, solution[:, -1], :]  # [batch_size, seq_len]
-            potential_start_times = torch.max(potential_arrival_times, earliest_start_time)  # [batch_size, seq_len]
-            exceed_latest_start_time = potential_start_times > latest_start_time  # [batch_size, seq_len]
-            exceed_time_limit = potential_start_times + services[batch_indices, :] + deltas[batch_indices, :,
-                                                                                     0] > time_limits  # [batch_size, seq_len]
-            exceed_infinite_time_limit = potential_start_times.isinf()  # [batch_size, seq_len]
-
-            potential_distance = distance + deltas[batch_indices, solution[:, -1], :]  # [batch_size, seq_len]
-
-            potential_distance_to_depot = potential_distance + deltas[batch_indices, :, 0]
-            exceed_distance_limit = potential_distance_to_depot > distance_limits  # [batch_size, seq_len]
-            exceed_infinite_distance_limit = potential_distance_to_depot.isinf()  # [batch_size, seq_len]
-
-            exceed_capacity = (deliveries + demands > capacities) | (pickups + demands_b > capacities)
-
-            # no place to serve linehaul
-            cannot_serve_linehaul = mixed_backhauls & (demands + pickups > capacities)
-
-            # Create base mask: visited nodes and invalid arcs
-            mask = torch.ones([batch_size, seq_len], device=device).to(torch.bool)
-            mask = mask.masked_fill(not_served, False)
-            mask = mask.masked_fill(invalid_arcs[batch_indices, solution[:, -1], :], True)
-
-            mask = mask.masked_fill(
-                exceed_capacity | cannot_serve_linehaul | exceed_latest_start_time | exceed_infinite_time_limit | exceed_distance_limit | exceed_infinite_distance_limit | exceed_time_limit,
-                True)  # mask: [batch_size, seq_len]
-
-            mask = mask.scatter(1, solution[:, -1].unsqueeze(1), True)
-            mask[:, 0] = is_depot & not_served.any(dim=1)
-
-            last = node_embeddings[batch_indices, solution[:, -1], :].unsqueeze(1)
-
-            remaining_distance = torch.nan_to_num(distance_limits - distance, posinf=10.0)  # - distance
-
-            remaining_demand = capacities - deliveries
-            remaining_demand_b = capacities - pickups
-
-            distance_to_depot = deltas[batch_indices, solution[:, -1], 0]
-            distance_to_depot = torch.nan_to_num(distance_to_depot, posinf=1e9).unsqueeze(-1)
-            data = torch.cat((last.squeeze(1),
-                              leave_time,
-                              remaining_distance,
-                              remaining_demand,
-                              remaining_demand_b,
-                              distance_to_depot,
-                              open_routes,
-                              mixed_backhauls), dim=-1)
-
-            dynamic_context = self.dynamic_context_embedding(data)
-
-            h_c = q_g + dynamic_context.unsqueeze(1)
-
-            dist_feat = deltas[batch_indices, solution[:, -1], :].unsqueeze(-1)
-            u = self.glimpse(h_c, mask, dist=dist_feat)
-            if self.edge_distance_scale is not None:
-                edge_dist = deltas[batch_indices, solution[:, -1], :]  # [B,seq_len]
-                u = u - self.edge_distance_scale * edge_dist
-
-            # incorporate edge attention bias
-            if attn_matrix is not None and self.edge_attn_scale is not None:
-                # attention from last selected node to all candidates
-                attn_feat = attn_matrix[batch_indices, solution[:, -1] , :]  # [batch_size, seq_len]
-                u = u + self.edge_attn_scale * attn_feat
-
-            u = u.masked_fill(mask, float('-inf'))  # [batch_size, seq_len]
+        while state.not_served.any():
+            step_result = self.step_logits(cache, common, state)
 
             if actions is None or actions.size(1) < solution.size(1) + 1:
-                # Sample or select action based on decode_mode
-                probas = torch.nn.functional.softmax(u, dim=-1)
+                probas = torch.softmax(step_result.logits, dim=-1)
                 if decode_mode == "greedy":
                     _, selected_node = self.greedy_decoding(probas)
                 elif decode_mode == "sample":
@@ -207,45 +229,11 @@ class EndToEndDecoder(DecoderBase, FreezingMixin):
                 else:
                     raise NotImplementedError(f"Decoding mode {decode_mode} not implemented.")
             else:
-                # Use the provided action
                 selected_node = actions[:, solution.size(1)]
-                # Note: TorchScript doesn't support assert with messages
-                # We assume actions are valid
 
-            log_probabilities = log_probabilities + self.cross_entropy(u, selected_node)
-            solution = torch.cat((solution, selected_node.unsqueeze(-1)), dim=1)
-            not_served[batch_indices, solution[:, -1]] = False
-
-            selected_demands = demands[batch_indices, selected_node]  # selected_demands: [batch_size]
-            selected_demands_b = demands_b[batch_indices, selected_node]  # selected_demands_b: [batch_size]
-            deliveries = deliveries + selected_demands.unsqueeze(1)  # [batch_size, 1]
-            pickups = pickups + selected_demands_b.unsqueeze(1)  # [batch_size, 1]
-
-            distance = potential_distance.gather(1, selected_node.unsqueeze(-1))  # [batch_size, 1]
-
-            # Demand and time calculations
-            selected_service_time = services[batch_indices, selected_node].unsqueeze(1)
-            selected_start_times = potential_start_times.gather(1, selected_node.unsqueeze(-1))  # [batch_size]
-            leave_time = (selected_start_times + selected_service_time)  # [batch_size, 1]
-
-            is_depot = selected_node == 0
-            # if not is_depot set it as not served
-            not_served[~is_depot, 0] = True
-            if is_depot.any():
-                # add return distance to depot
-                total_distance[is_depot] = total_distance[is_depot] + distance[is_depot] + deltas[
-                    batch_indices[is_depot], selected_node[is_depot], 0].unsqueeze(-1)
-                deliveries[is_depot] = 0
-                pickups[is_depot] = 0
-                distance[is_depot] = 0
-                leave_time[is_depot] = time_windows[is_depot, 0, 0].unsqueeze(1)
-
-        # batch_idx = torch.arange(batch_size, device=solution.device)[:, None]
-        # deltas[global_features[:, 1].bool(), :, 0] = 0.0
-        # costs = torch.sum(deltas[batch_idx, solution[:, :-1], solution[:, 1:]], dim=1)
+            log_probabilities = log_probabilities + self.cross_entropy(step_result.logits, selected_node)
+            solution = torch.cat([solution, selected_node.unsqueeze(1)], dim=1)
+            state = self.step_update(common, state, selected_node, step_result)
 
         assert solution.shape[1] >= seq_len
-        costs = total_distance.squeeze(1)
-
-        return -log_probabilities, solution, costs
-
+        return -log_probabilities, solution, state.total_distance.squeeze(1)
