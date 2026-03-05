@@ -13,6 +13,11 @@ from rich import box
 from rich.table import Table
 
 
+def _verbose_print(args: argparse.Namespace, message: str) -> None:
+    if bool(getattr(args, "verbose", False)):
+        print(message)
+
+
 def _load_report(path: Path) -> Optional[Dict[str, Any]]:
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -96,6 +101,7 @@ def _run_randomized_report(
     report: Dict[str, Any], args: argparse.Namespace
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     cmd = _build_randomized_cmd(report, args)
+    _verbose_print(args, "[run] " + " ".join(cmd))
     if args.dry_run:
         print("[dry-run] " + " ".join(cmd))
         return None, None
@@ -115,6 +121,7 @@ def _run_randomized_report(
     report_path = _extract_saved_report_path(proc.stdout)
     if report_path is None or not report_path.exists():
         return None, "randomized report path could not be parsed from stdout"
+    _verbose_print(args, f"[ok] randomized report: {report_path}")
     wrapper = _load_report(report_path)
     if wrapper is None:
         return None, "randomized report could not be loaded"
@@ -280,6 +287,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--num-instances-fallback", type=int, default=128)
     parser.add_argument("--max-steps-fallback", type=int, default=300)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print discovered reports, rerun commands, and randomized report paths.",
+    )
     return parser
 
 
@@ -301,17 +313,31 @@ def main() -> None:
     else:
         pattern = str(Path(args.project_root) / args.pattern)
         reports = _discover_reports(pattern, args.latest)
+    _verbose_print(args, f"Loaded {len(reports)} trained report(s) for sanity checks.")
 
     rows: List[Dict[str, Any]] = []
     failures: List[Tuple[str, str]] = []
-    for report in reports:
+    for idx, report in enumerate(reports, start=1):
+        _verbose_print(
+            args,
+            f"[{idx}/{len(reports)}] Comparing report: {report.get('file', '<unknown>')}",
+        )
         randomized, error = _run_randomized_report(report, args)
         if error is not None:
             failures.append((ee._model_name(report), error))
             continue
         if randomized is None:
             continue
-        rows.append(_compare_reports(report, randomized))
+        row = _compare_reports(report, randomized)
+        rows.append(row)
+        _verbose_print(
+            args,
+            (
+                f"[{idx}/{len(reports)}] Result: "
+                f"d_clr={ee._fmt_float(row['clarity_drop'])} "
+                f"ov@1={ee._fmt_float(row['overlap_at_1'])}"
+            ),
+        )
 
     rows.sort(key=lambda row: (row["clarity_drop"], row["focus_top1_drop"]), reverse=True)
     _print_table(rows, layout=args.table_layout)

@@ -15,6 +15,11 @@ import action_explainer as grad_base
 import integrated_gradients_explainer as ig_main
 
 
+def _verbose_print(args: argparse.Namespace, message: str) -> None:
+    if bool(getattr(args, "verbose", False)):
+        print(message)
+
+
 def _parse_baselines(raw: str) -> List[str]:
     values = [tok.strip() for tok in str(raw).split(",") if tok.strip()]
     if not values:
@@ -161,6 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument("--summary-output", default=None)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print each baseline run and the generated report path.",
+    )
     return parser
 
 
@@ -176,10 +186,21 @@ def main() -> None:
 
     rows: List[Dict[str, Any]] = []
     report_paths: List[str] = []
-    for baseline in baselines:
+    for idx, baseline in enumerate(baselines, start=1):
+        _verbose_print(args, f"[{idx}/{len(baselines)}] Running IG baseline: {baseline}")
         report_path = ig_main.run(_run_args(args, baseline), grad_base_module=grad_base)
+        _verbose_print(args, f"[{idx}/{len(baselines)}] Report saved: {report_path}")
         report_paths.append(str(report_path))
-        rows.append(_hydrate_metrics_from_shared(report_path, topk_values))
+        row = _hydrate_metrics_from_shared(report_path, topk_values)
+        rows.append(row)
+        _verbose_print(
+            args,
+            (
+                f"[{idx}/{len(baselines)}] Metrics: "
+                f"focus@1={row['focus@1']:.4f} clarity={row['clarity']:.4f} "
+                f"contrast={row['contrast']:.4f}"
+            ),
+        )
 
     _print_table(rows, topk_values)
 
@@ -198,6 +219,7 @@ def main() -> None:
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary_payload, handle, indent=2)
+    _verbose_print(args, f"Compared {len(rows)} baseline runs.")
     print(f"Saved baseline comparison to {summary_path}")
 
 

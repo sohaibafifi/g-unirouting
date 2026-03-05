@@ -232,6 +232,21 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
     if bool(getattr(args, "randomize_weights", False)):
         grad_base._randomize_model_weights(model)
     recourse_enabled = grad_base._is_recourse_decoder(model)
+    feasibility_weight = grad_base._parse_feasibility_weight(
+        getattr(args, "feasibility_weight", None), recourse_enabled
+    )
+    feasibility_top_m = grad_base._parse_feasibility_top_m(
+        getattr(args, "feasibility_top_m", 8)
+    )
+    feasibility_cost_weight = grad_base._parse_feasibility_cost_weight(
+        getattr(args, "feasibility_cost_weight", 0.25)
+    )
+    use_feasibility_importance = recourse_enabled and (feasibility_weight > 0.0)
+    importance_mode = (
+        "integrated-gradients+feasibility"
+        if use_feasibility_importance
+        else "integrated-gradients"
+    )
 
     topk_list = grad_base._parse_topk_nodes(args.topk_nodes)
     max_attr_k = max(topk_list)
@@ -283,6 +298,8 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
     counterfactual_approximate_history: List[float] = []
     counterfactual_relative_delta_history: List[float] = []
     counterfactual_by_feature: Dict[str, List[float]] = defaultdict(list)
+    decision_node_attr_history: List[float] = []
+    feasibility_node_attr_history: List[float] = []
 
     step_records: List[Dict[str, Any]] = []
     state = grad_base._init_state(grad_base._build_common(node_features, global_features))
@@ -391,7 +408,7 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
         step_contrastive_feature_attr_mean: Dict[str, float] = {}
         instance_feature_attr: Dict[str, torch.Tensor] = {}
         instance_contrastive_feature_attr: Dict[str, torch.Tensor] = {}
-        node_scores = torch.zeros(
+        decision_node_scores = torch.zeros(
             (batch_size, num_nodes), dtype=node_features.dtype, device=node_features.device
         )
 
@@ -411,7 +428,7 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
 
             node_score = grad_base._grad_to_node_scores(grad, num_nodes)
             if node_score is not None:
-                node_scores = node_scores + node_score
+                decision_node_scores = decision_node_scores + node_score
 
             contrastive_grad = contrastive_grad_by_feature.get(name)
             contrastive_inst_score = grad_base._grad_to_instance_scores(contrastive_grad)
@@ -426,7 +443,30 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
             instance_contrastive_feature_attr[name] = contrastive_inst_score
             per_feature_contrastive_attr[name].append(contrastive_mean_score)
 
-        node_scores[:, 0] = 0.0
+        decision_node_scores[:, 0] = 0.0
+        decision_node_attr_history.append(float(decision_node_scores[:, 1:].mean().item()))
+        feasibility_node_scores = torch.zeros_like(decision_node_scores)
+        if use_feasibility_importance:
+            feasibility_node_scores = grad_base._compute_feasibility_node_scores(
+                node_features=node_features.detach(),
+                global_features=global_features.detach(),
+                state=state,
+                action=action.detach(),
+                base_feasible=action_feasible.detach(),
+                base_recourse_cost=recourse_cost_est.detach(),
+                decision_node_scores=decision_node_scores.detach(),
+                top_m=feasibility_top_m,
+                cost_weight=feasibility_cost_weight,
+                recourse_enabled=recourse_enabled,
+            )
+            node_scores = (
+                grad_base._normalize_node_scores(decision_node_scores.detach())
+                + feasibility_weight * feasibility_node_scores
+            )
+        else:
+            node_scores = decision_node_scores
+        feasibility_node_scores[:, 0] = 0.0
+        feasibility_node_attr_history.append(float(feasibility_node_scores[:, 1:].mean().item()))
         rank_candidate_mask = state.not_served.clone()
         rank_candidate_mask[:, 0] = True
         (
@@ -435,6 +475,27 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
             top_nodes_valid_all,
             top_k_effective,
         ) = grad_base._top_nodes_and_scores(node_scores, rank_candidate_mask, max_attr_k)
+        (
+            top_nodes_decision_all,
+            top_scores_decision_all,
+            top_nodes_decision_valid_all,
+            _,
+        ) = grad_base._top_nodes_and_scores(
+            decision_node_scores, rank_candidate_mask, max_attr_k
+        )
+        if use_feasibility_importance:
+            (
+                top_nodes_feasibility_all,
+                top_scores_feasibility_all,
+                top_nodes_feasibility_valid_all,
+                _,
+            ) = grad_base._top_nodes_and_scores(
+                feasibility_node_scores, rank_candidate_mask, max_attr_k
+            )
+        else:
+            top_nodes_feasibility_all = None
+            top_scores_feasibility_all = None
+            top_nodes_feasibility_valid_all = None
 
         top_features_payload = grad_base._top_feature_payload(step_feature_attr_mean, top_n=3)
         step_constraint_attr_mean = grad_base._aggregate_constraint_scores(step_feature_attr_mean)
@@ -534,6 +595,31 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
             step_top_nodes = top_nodes_all[:num_store].detach().cpu().tolist()
             step_top_scores = top_scores_all[:num_store].detach().cpu().tolist()
             step_top_valid = top_nodes_valid_all[:num_store].detach().cpu().tolist()
+            step_top_nodes_decision = top_nodes_decision_all[:num_store].detach().cpu().tolist()
+            step_top_scores_decision = top_scores_decision_all[:num_store].detach().cpu().tolist()
+            step_top_valid_decision = (
+                top_nodes_decision_valid_all[:num_store].detach().cpu().tolist()
+            )
+            if use_feasibility_importance:
+                step_top_nodes_feasibility = (
+                    top_nodes_feasibility_all[:num_store].detach().cpu().tolist()
+                    if top_nodes_feasibility_all is not None
+                    else []
+                )
+                step_top_scores_feasibility = (
+                    top_scores_feasibility_all[:num_store].detach().cpu().tolist()
+                    if top_scores_feasibility_all is not None
+                    else []
+                )
+                step_top_valid_feasibility = (
+                    top_nodes_feasibility_valid_all[:num_store].detach().cpu().tolist()
+                    if top_nodes_feasibility_valid_all is not None
+                    else []
+                )
+            else:
+                step_top_nodes_feasibility = []
+                step_top_scores_feasibility = []
+                step_top_valid_feasibility = []
             alt_action_store = alt_action[:num_store].detach().cpu().tolist()
             has_alt_store = has_alt[:num_store].detach().cpu().tolist()
             alt_action_policy_store = (
@@ -604,13 +690,45 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
                     ]
                 )
                 instance_traces[i]["top_nodes_decision"].append(
-                    instance_traces[i]["top_nodes"][-1]
+                    [
+                        int(node)
+                        for node, valid in zip(
+                            step_top_nodes_decision[i], step_top_valid_decision[i]
+                        )
+                        if bool(valid)
+                    ]
                 )
                 instance_traces[i]["top_scores_decision"].append(
-                    instance_traces[i]["top_scores"][-1]
+                    [
+                        float(score)
+                        for score, valid in zip(
+                            step_top_scores_decision[i], step_top_valid_decision[i]
+                        )
+                        if bool(valid)
+                    ]
                 )
-                instance_traces[i]["top_nodes_feasibility"].append([])
-                instance_traces[i]["top_scores_feasibility"].append([])
+                if use_feasibility_importance:
+                    instance_traces[i]["top_nodes_feasibility"].append(
+                        [
+                            int(node)
+                            for node, valid in zip(
+                                step_top_nodes_feasibility[i], step_top_valid_feasibility[i]
+                            )
+                            if bool(valid)
+                        ]
+                    )
+                    instance_traces[i]["top_scores_feasibility"].append(
+                        [
+                            float(score)
+                            for score, valid in zip(
+                                step_top_scores_feasibility[i], step_top_valid_feasibility[i]
+                            )
+                            if bool(valid)
+                        ]
+                    )
+                else:
+                    instance_traces[i]["top_nodes_feasibility"].append([])
+                    instance_traces[i]["top_scores_feasibility"].append([])
                 instance_traces[i]["top_features"].append(inst_top_features)
                 instance_traces[i]["top_constraints"].append(inst_top_constraints)
                 if has_alt_policy_store[i]:
@@ -781,6 +899,14 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
                 for key in sorted(per_constraint_contrastive_attr.keys())
             },
         },
+        "node_importance": {
+            "mode": importance_mode,
+            "feasibility_weight": float(feasibility_weight),
+            "feasibility_top_m": int(feasibility_top_m),
+            "feasibility_cost_weight": float(feasibility_cost_weight),
+            "decision_mean": grad_base._safe_mean(decision_node_attr_history),
+            "feasibility_mean": grad_base._safe_mean(feasibility_node_attr_history),
+        },
         "counterfactuals": {
             "available_rate": grad_base._safe_mean(counterfactual_available_history),
             "switch_rate": grad_base._safe_mean(counterfactual_switch_history),
@@ -864,9 +990,15 @@ def run(args: argparse.Namespace, grad_base_module: Any | None = None) -> Path:
             "checkpoint_path": str(checkpoint_path),
             "checkpoint_path_resolved": str(checkpoint_path.resolve()),
             "checkpoint_kind": checkpoint_path.name,
-            "model_state": "trained",
+            "randomize_weights": bool(getattr(args, "randomize_weights", False)),
+            "model_state": (
+                "randomized" if bool(getattr(args, "randomize_weights", False)) else "trained"
+            ),
             "attribution_method": "integrated_gradients",
-            "node_importance_mode": "integrated-gradients",
+            "node_importance_mode": importance_mode,
+            "feasibility_weight": float(feasibility_weight),
+            "feasibility_top_m": int(feasibility_top_m),
+            "feasibility_cost_weight": float(feasibility_cost_weight),
             "ig_steps": int(args.ig_steps),
             "ig_baseline": baseline_tag,
             "problem": config.problem,
@@ -937,6 +1069,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", default=None, help="Device override (cpu, cuda, mps).")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--randomize-weights",
+        action="store_true",
+        help="Reset model weights after loading the architecture/checkpoint.",
+    )
+    parser.add_argument(
+        "--feasibility-weight",
+        type=float,
+        default=None,
+        help=(
+            "Weight of the feasibility-sensitive node importance term. "
+            "Defaults to 1.0 for RecourseDecoder and 0.0 otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--feasibility-top-m",
+        type=int,
+        default=8,
+        help="Top-M customer nodes probed for feasibility sensitivity (0 = all customers).",
+    )
+    parser.add_argument(
+        "--feasibility-cost-weight",
+        type=float,
+        default=0.25,
+        help="Relative weight of recourse-cost sensitivity inside the feasibility term.",
+    )
     parser.add_argument(
         "--data-seed",
         type=int,
