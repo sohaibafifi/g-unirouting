@@ -475,6 +475,46 @@ def _dominant_constraint_name(shares: dict[str, float]) -> str:
     return str(name) if float(value) > 0 else "none"
 
 
+def _finite_series(values: List[object]) -> List[float]:
+    out: List[float] = []
+    for value in values:
+        try:
+            cast = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(cast):
+            out.append(cast)
+    return out
+
+
+def _masked_finite_series(values: List[object], mask: List[bool]) -> List[float]:
+    out: List[float] = []
+    for value, keep in zip(values, mask):
+        if not bool(keep):
+            continue
+        try:
+            cast = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(cast):
+            out.append(cast)
+    return out
+
+
+def _share_leq(values: List[float], threshold: float) -> float:
+    finite = _finite_series([float(v) for v in values])
+    if not finite:
+        return float("nan")
+    return float(sum(1 for value in finite if value <= threshold) / len(finite))
+
+
+def _share_gt(values: List[float], threshold: float = 0.0) -> float:
+    finite = _finite_series([float(v) for v in values])
+    if not finite:
+        return float("nan")
+    return float(sum(1 for value in finite if value > threshold) / len(finite))
+
+
 def _trajectory_reading_lines(
     depot_share: float | None,
     customer_hop: float | None,
@@ -482,6 +522,9 @@ def _trajectory_reading_lines(
     early_top: str | None,
     late_top: str | None,
     late_capacity_share: float | None = None,
+    tw_tight_share: float | None = None,
+    late_tw_tight_share: float | None = None,
+    recourse_under_tw_tight_share: float | None = None,
 ) -> List[str]:
     lines: List[str] = []
 
@@ -507,6 +550,33 @@ def _trajectory_reading_lines(
             lines.append("Lecture: le recours devient un mécanisme récurrent sur la trajectoire")
         elif rec >= 0.5:
             lines.append("Lecture: le recours reste ponctuel mais visible")
+
+    if tw_tight_share is not None and math.isfinite(float(tw_tight_share)):
+        share = float(tw_tight_share)
+        if share >= 0.45:
+            lines.append(
+                "Lecture: une large part des décisions clients se fait sous forte pression de fenêtre de temps"
+            )
+        elif share >= 0.20:
+            lines.append(
+                "Lecture: la pression temporelle est présente sur une part non négligeable des décisions"
+            )
+    if (
+        late_tw_tight_share is not None
+        and math.isfinite(float(late_tw_tight_share))
+        and float(late_tw_tight_share) >= 0.40
+    ):
+        lines.append(
+            "Lecture: la fin de tournée devient nettement plus contrainte par les fenêtres de temps"
+        )
+    if (
+        recourse_under_tw_tight_share is not None
+        and math.isfinite(float(recourse_under_tw_tight_share))
+        and float(recourse_under_tw_tight_share) >= 0.50
+    ):
+        lines.append(
+            "Lecture: les recours observés apparaissent majoritairement quand la marge TW est déjà serrée"
+        )
 
     if (
         late_capacity_share is not None
@@ -538,6 +608,7 @@ def _summarize_trace_trajectory(trace: dict, include_reading: bool = True) -> Li
     locs = np.array(trace.get("locs", []), dtype=float)
     recourse_flags = [bool(v) for v in trace.get("recourse_triggered", [])]
     top_constraints = trace.get("top_constraints", []) or []
+    solution_features = trace.get("solution_features", {}) or {}
 
     depot_returns = sum(1 for action in actions if action == 0)
     customer_actions = sum(1 for action in actions if action > 0)
@@ -567,6 +638,45 @@ def _summarize_trace_trajectory(trace: dict, include_reading: bool = True) -> Li
         float(np.mean(customer_hops)) if customer_hops else float("nan")
     )
     recourse_count = float(sum(1 for flag in recourse_flags if flag))
+    selected_is_customer = [
+        bool(v) for v in (solution_features.get("selected_is_customer", []) or [])
+    ]
+    tw_slack_norm_customer = _masked_finite_series(
+        solution_features.get("selected_tw_slack_norm", []) or [],
+        selected_is_customer,
+    )
+    wait_time_customer = _masked_finite_series(
+        solution_features.get("selected_wait_time", []) or [],
+        selected_is_customer,
+    )
+    linehaul_util = _finite_series(
+        solution_features.get("used_capacity_linehaul_share", []) or []
+    )
+    backhaul_util = _finite_series(
+        solution_features.get("used_capacity_backhaul_share", []) or []
+    )
+    late_start = max(1, len(actions) // 2)
+    late_tw_slack_norm = _masked_finite_series(
+        (solution_features.get("selected_tw_slack_norm", []) or [])[late_start:],
+        selected_is_customer[late_start:],
+    )
+    recourse_tw_slack_norm: List[float] = []
+    for tw_raw, is_customer, recourse in zip(
+        solution_features.get("selected_tw_slack_norm", []) or [],
+        selected_is_customer,
+        recourse_flags,
+    ):
+        if not bool(is_customer) or not bool(recourse):
+            continue
+        try:
+            tw_value = float(tw_raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(tw_value):
+            recourse_tw_slack_norm.append(tw_value)
+    tw_tight_share = _share_leq(tw_slack_norm_customer, 0.10)
+    late_tw_tight_share = _share_leq(late_tw_slack_norm, 0.10)
+    recourse_tw_tight_share = _share_leq(recourse_tw_slack_norm, 0.10)
 
     lines: List[str] = []
     if include_reading:
@@ -578,6 +688,9 @@ def _summarize_trace_trajectory(trace: dict, include_reading: bool = True) -> Li
                 early_top=early_top,
                 late_top=late_top,
                 late_capacity_share=late_capacity_share,
+                tw_tight_share=tw_tight_share,
+                late_tw_tight_share=late_tw_tight_share,
+                recourse_under_tw_tight_share=recourse_tw_tight_share,
             )
         )
 
@@ -600,6 +713,33 @@ def _summarize_trace_trajectory(trace: dict, include_reading: bool = True) -> Li
         lines.append(f"Distance moyenne par action: {mean_hop:.3f}")
     if math.isfinite(mean_customer_hop):
         lines.append(f"Distance moyenne entre deux clients: {mean_customer_hop:.3f}")
+    if tw_slack_norm_customer:
+        lines.append(
+            f"Marge TW normalisée moyenne (clients): {float(np.mean(tw_slack_norm_customer)):.3f}"
+        )
+    if math.isfinite(tw_tight_share):
+        lines.append(
+            f"Part d'étapes clients avec TW serrée (<=10%): {tw_tight_share * 100.0:.1f}%"
+        )
+    if math.isfinite(late_tw_tight_share):
+        lines.append(
+            f"Part tardive d'étapes clients avec TW serrée: {late_tw_tight_share * 100.0:.1f}%"
+        )
+    wait_share = _share_gt(wait_time_customer, 0.0)
+    if math.isfinite(wait_share):
+        lines.append(f"Part d'étapes clients avec attente: {wait_share * 100.0:.1f}%")
+    if math.isfinite(recourse_tw_tight_share):
+        lines.append(
+            f"Parmi les étapes en recours, part sous TW serrée: {recourse_tw_tight_share * 100.0:.1f}%"
+        )
+    if linehaul_util:
+        lines.append(
+            f"Utilisation linehaul moyenne en cours de tournée: {float(np.mean(linehaul_util)) * 100.0:.1f}%"
+        )
+    if backhaul_util:
+        lines.append(
+            f"Utilisation backhaul moyenne en cours de tournée: {float(np.mean(backhaul_util)) * 100.0:.1f}%"
+        )
     lines.append(f"Début de tournée dominé par: {early_top}")
     lines.append(f"Fin de tournée dominée par: {late_top}")
     return lines
@@ -630,12 +770,28 @@ def _format_report_trajectory(summary: dict) -> List[str]:
     early = _constraint_label(early_key)
     late = _constraint_label(late_key)
     late_constraint_share = trajectory.get("late_constraint_share", {}) or {}
+    solution = trajectory.get("solution_features", {}) or {}
+    characteristic_explanations = trajectory.get("characteristic_explanations", {}) or {}
     try:
         late_capacity_share = float(
             late_constraint_share.get("capacity_demands", float("nan"))
         )
     except (TypeError, ValueError):
         late_capacity_share = float("nan")
+    try:
+        tw_tight_share = float(solution.get("tw_tight_step_share", float("nan")))
+    except (TypeError, ValueError):
+        tw_tight_share = float("nan")
+    try:
+        late_tw_tight_share = float(solution.get("late_tw_tight_step_share", float("nan")))
+    except (TypeError, ValueError):
+        late_tw_tight_share = float("nan")
+    try:
+        recourse_tw_tight_share = float(
+            solution.get("recourse_under_tw_tight_share", float("nan"))
+        )
+    except (TypeError, ValueError):
+        recourse_tw_tight_share = float("nan")
 
     items.extend(
         _trajectory_reading_lines(
@@ -645,6 +801,9 @@ def _format_report_trajectory(summary: dict) -> List[str]:
             early_top=early_key,
             late_top=late_key,
             late_capacity_share=late_capacity_share,
+            tw_tight_share=tw_tight_share,
+            late_tw_tight_share=late_tw_tight_share,
+            recourse_under_tw_tight_share=recourse_tw_tight_share,
         )
     )
 
@@ -662,6 +821,58 @@ def _format_report_trajectory(summary: dict) -> List[str]:
             items.append(f"Glissement dominant: {early} -> {late}")
     if math.isfinite(recourse_value) and recourse_value > 0:
         items.append(f"Recours moyen par instance stockée: {recourse_value:.2f}")
+    for label, key, scale in [
+        ("Marge TW normalisée moyenne (clients)", "mean_selected_tw_slack_norm", 1.0),
+        ("Part d'étapes clients avec TW serrée (<=10%)", "tw_tight_step_share", 100.0),
+        ("Part tardive d'étapes clients avec TW serrée", "late_tw_tight_step_share", 100.0),
+        ("Part d'étapes de recours sous TW serrée", "recourse_under_tw_tight_share", 100.0),
+        ("Attente moyenne sur étapes clients", "mean_selected_wait_time", 1.0),
+        ("Part d'étapes clients avec attente", "wait_step_share", 100.0),
+        ("Utilisation linehaul moyenne par route", "route_linehaul_utilization_mean", 100.0),
+        ("Utilisation backhaul moyenne par route", "route_backhaul_utilization_mean", 100.0),
+        ("Longueur moyenne de route", "route_length_mean", 1.0),
+        ("Profondeur moyenne de route", "route_depth_mean", 1.0),
+        ("Largeur moyenne de route", "route_width_mean", 1.0),
+    ]:
+        raw = solution.get(key, float("nan"))
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = float("nan")
+        if not math.isfinite(value):
+            continue
+        if scale == 100.0:
+            items.append(f"{label}: {value * scale:.1f}%")
+        else:
+            items.append(f"{label}: {value:.3f}")
+
+    for key, label in [
+        ("depot_return_share", "retours dépôt"),
+        ("late_tw_tight_step_share", "TW serrées en fin de tournée"),
+        ("recourse_under_tw_tight_share", "recours sous TW serrée"),
+        ("wait_step_share", "attente sur étapes clients"),
+    ]:
+        payload = characteristic_explanations.get(key, None)
+        if not isinstance(payload, dict):
+            continue
+        try:
+            support_rate = float(payload.get("support_rate", float("nan")))
+        except (TypeError, ValueError):
+            support_rate = float("nan")
+        support_txt = (
+            f"{support_rate * 100.0:.1f}% des étapes éligibles"
+            if math.isfinite(support_rate)
+            else "taux indisponible"
+        )
+        constraint_items = payload.get("top_constraints", []) or []
+        feature_items = payload.get("top_features", []) or []
+        chunks: List[str] = []
+        if constraint_items:
+            chunks.append(f"contraintes: {_format_top_constraints(constraint_items)}")
+        if feature_items:
+            chunks.append(f"features: {_format_top_features(feature_items)}")
+        if chunks:
+            items.append(f"Pourquoi {label} ({support_txt}): " + " | ".join(chunks))
     return items
 
 

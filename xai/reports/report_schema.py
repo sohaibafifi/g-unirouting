@@ -46,6 +46,11 @@ class InstanceTrace(TypedDict, total=False):
     instance_variant_flags: Dict[str, bool]
     instance_active_constraints: List[str]
     locs: List[List[float]]
+    demand_linehaul: List[float]
+    demand_backhaul: List[float]
+    vehicle_capacity: float
+    distance_limit: float
+    depot_time_limit: float
     actions: List[int]
     done_before: List[bool]
     done_after: List[bool]
@@ -54,6 +59,7 @@ class InstanceTrace(TypedDict, total=False):
     top_features: List[List[Dict[str, Any]]]
     top_constraints: List[List[Dict[str, Any]]]
     counterfactuals: List[Optional[Dict[str, Any]]]
+    solution_features: Dict[str, List[float]]
 
 
 class ReportData(TypedDict, total=False):

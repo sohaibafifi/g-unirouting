@@ -61,7 +61,11 @@ def main() -> None:
             "counterfactual_make_feasible_rate", "counterfactual_mean_relative_delta",
             "trajectory_depot_returns", "trajectory_depot_share",
             "trajectory_customer_hop_distance", "trajectory_recourse_burst_count",
-            "trajectory_late_capacity_share", "optional_consistency", "recourse_rate",
+            "trajectory_late_capacity_share",
+            "trajectory_mean_selected_tw_slack_norm",
+            "trajectory_late_tw_tight_share",
+            "trajectory_recourse_under_tw_tight_share",
+            "optional_consistency", "recourse_rate",
         ],
     )
     parser.add_argument("--ascending", action="store_true")

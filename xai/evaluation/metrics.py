@@ -215,6 +215,9 @@ def _fallback_trajectory_metrics(traces: List[Dict[str, Any]]) -> Dict[str, floa
     customer_hops: List[float] = []
     recourse_bursts: List[float] = []
     late_capacity_terms: List[float] = []
+    tw_slack_norm_terms: List[float] = []
+    late_tw_tight_terms: List[float] = []
+    recourse_tw_tight_terms: List[float] = []
 
     for trace in traces:
         actions = [int(v) for v in (trace.get("actions", []) or [])]
@@ -251,12 +254,58 @@ def _fallback_trajectory_metrics(traces: List[Dict[str, Any]]) -> Dict[str, floa
         for payload in late_constraints:
             late_capacity_terms.append(constraint_share(payload or [], "capacity_demands"))
 
+        solution = trace.get("solution_features", {}) or {}
+        is_customer = [bool(v) for v in (solution.get("selected_is_customer", []) or [])]
+        tw_slack_norm_raw = solution.get("selected_tw_slack_norm", []) or []
+        tw_slack_norm_customer: List[float] = []
+        for raw_value, customer_flag in zip(tw_slack_norm_raw, is_customer):
+            if not bool(customer_flag):
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                tw_slack_norm_customer.append(value)
+        if tw_slack_norm_customer:
+            tw_slack_norm_terms.append(safe_mean(tw_slack_norm_customer))
+
+        late_tw_values = tw_slack_norm_customer[len(tw_slack_norm_customer) // 2 :]
+        if late_tw_values:
+            late_tw_tight_terms.append(
+                sum(1.0 for value in late_tw_values if value <= 0.10)
+                / len(late_tw_values)
+            )
+
+        recourse_tw_values: List[float] = []
+        for raw_value, customer_flag, recourse_flag in zip(
+            tw_slack_norm_raw,
+            is_customer,
+            recourse_flags,
+        ):
+            if not bool(customer_flag) or not bool(recourse_flag):
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                recourse_tw_values.append(value)
+        if recourse_tw_values:
+            recourse_tw_tight_terms.append(
+                sum(1.0 for value in recourse_tw_values if value <= 0.10)
+                / len(recourse_tw_values)
+            )
+
     return {
         "trajectory_depot_returns": safe_mean(depot_returns),
         "trajectory_depot_share": safe_mean(depot_shares),
         "trajectory_customer_hop_distance": safe_mean(customer_hops),
         "trajectory_recourse_burst_count": safe_mean(recourse_bursts),
         "trajectory_late_capacity_share": safe_mean(late_capacity_terms),
+        "trajectory_mean_selected_tw_slack_norm": safe_mean(tw_slack_norm_terms),
+        "trajectory_late_tw_tight_share": safe_mean(late_tw_tight_terms),
+        "trajectory_recourse_under_tw_tight_share": safe_mean(recourse_tw_tight_terms),
     }
 
 
@@ -266,6 +315,7 @@ def trajectory_metrics(
     trajectory = summary.get("trajectory", {}) or {}
     if trajectory:
         late_share = trajectory.get("late_constraint_share", {}) or {}
+        solution = trajectory.get("solution_features", {}) or {}
         return {
             "trajectory_depot_returns": float(
                 trajectory.get("mean_depot_returns_per_instance", float("nan"))
@@ -281,6 +331,24 @@ def trajectory_metrics(
             ),
             "trajectory_late_capacity_share": float(
                 late_share.get("capacity_demands", float("nan"))
+            ),
+            "trajectory_mean_selected_tw_slack_norm": float(
+                solution.get(
+                    "mean_selected_tw_slack_norm",
+                    trajectory.get("mean_selected_tw_slack_norm", float("nan")),
+                )
+            ),
+            "trajectory_late_tw_tight_share": float(
+                solution.get(
+                    "late_tw_tight_step_share",
+                    trajectory.get("late_tw_tight_step_share", float("nan")),
+                )
+            ),
+            "trajectory_recourse_under_tw_tight_share": float(
+                solution.get(
+                    "recourse_under_tw_tight_share",
+                    trajectory.get("recourse_under_tw_tight_share", float("nan")),
+                )
             ),
         }
     return _fallback_trajectory_metrics(traces)
@@ -411,6 +479,13 @@ def evaluate_single_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "trajectory_customer_hop_distance": traj_metrics["trajectory_customer_hop_distance"],
         "trajectory_recourse_burst_count": traj_metrics["trajectory_recourse_burst_count"],
         "trajectory_late_capacity_share": traj_metrics["trajectory_late_capacity_share"],
+        "trajectory_mean_selected_tw_slack_norm": traj_metrics[
+            "trajectory_mean_selected_tw_slack_norm"
+        ],
+        "trajectory_late_tw_tight_share": traj_metrics["trajectory_late_tw_tight_share"],
+        "trajectory_recourse_under_tw_tight_share": traj_metrics[
+            "trajectory_recourse_under_tw_tight_share"
+        ],
         "recourse_rate": summary.get("recourse_event_rate"),
         "chosen_feasible_rate": summary.get("chosen_action_feasible_rate"),
     }
@@ -459,6 +534,15 @@ def aggregate_report_rows(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 "trajectory_customer_hop_distance": safe_mean(row["trajectory_customer_hop_distance"] for row in metric_rows),
                 "trajectory_recourse_burst_count": safe_mean(row["trajectory_recourse_burst_count"] for row in metric_rows),
                 "trajectory_late_capacity_share": safe_mean(row["trajectory_late_capacity_share"] for row in metric_rows),
+                "trajectory_mean_selected_tw_slack_norm": safe_mean(
+                    row["trajectory_mean_selected_tw_slack_norm"] for row in metric_rows
+                ),
+                "trajectory_late_tw_tight_share": safe_mean(
+                    row["trajectory_late_tw_tight_share"] for row in metric_rows
+                ),
+                "trajectory_recourse_under_tw_tight_share": safe_mean(
+                    row["trajectory_recourse_under_tw_tight_share"] for row in metric_rows
+                ),
                 "tw_active_mass": safe_mean(row["tw_active_mass"] for row in metric_rows),
                 "tw_inactive_mass": safe_mean(row["tw_inactive_mass"] for row in metric_rows),
                 "recourse_rate": safe_mean(row["recourse_rate"] for row in metric_rows),
@@ -588,6 +672,15 @@ def evaluate_robustness(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "trajectory_depot_returns": safe_mean(m["trajectory_depot_returns"] for m in metrics),
                     "trajectory_customer_hop_distance": safe_mean(m["trajectory_customer_hop_distance"] for m in metrics),
                     "trajectory_late_capacity_share": safe_mean(m["trajectory_late_capacity_share"] for m in metrics),
+                    "trajectory_mean_selected_tw_slack_norm": safe_mean(
+                        m["trajectory_mean_selected_tw_slack_norm"] for m in metrics
+                    ),
+                    "trajectory_late_tw_tight_share": safe_mean(
+                        m["trajectory_late_tw_tight_share"] for m in metrics
+                    ),
+                    "trajectory_recourse_under_tw_tight_share": safe_mean(
+                        m["trajectory_recourse_under_tw_tight_share"] for m in metrics
+                    ),
                     "optional_consistency": safe_mean(m["optional_consistency"] for m in metrics),
                     "tw_inactive_mass": safe_mean(m["tw_inactive_mass"] for m in metrics),
                     "recourse_rate": safe_mean(m["recourse_rate"] for m in metrics),
@@ -622,6 +715,24 @@ def evaluate_robustness(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "trajectory_customer_hop_distance_std": safe_std(r["trajectory_customer_hop_distance"] for r in seed_rows),
                 "trajectory_late_capacity_share_mean": safe_mean(r["trajectory_late_capacity_share"] for r in seed_rows),
                 "trajectory_late_capacity_share_std": safe_std(r["trajectory_late_capacity_share"] for r in seed_rows),
+                "trajectory_mean_selected_tw_slack_norm_mean": safe_mean(
+                    r["trajectory_mean_selected_tw_slack_norm"] for r in seed_rows
+                ),
+                "trajectory_mean_selected_tw_slack_norm_std": safe_std(
+                    r["trajectory_mean_selected_tw_slack_norm"] for r in seed_rows
+                ),
+                "trajectory_late_tw_tight_share_mean": safe_mean(
+                    r["trajectory_late_tw_tight_share"] for r in seed_rows
+                ),
+                "trajectory_late_tw_tight_share_std": safe_std(
+                    r["trajectory_late_tw_tight_share"] for r in seed_rows
+                ),
+                "trajectory_recourse_under_tw_tight_share_mean": safe_mean(
+                    r["trajectory_recourse_under_tw_tight_share"] for r in seed_rows
+                ),
+                "trajectory_recourse_under_tw_tight_share_std": safe_std(
+                    r["trajectory_recourse_under_tw_tight_share"] for r in seed_rows
+                ),
                 "optional_consistency_mean": safe_mean(r["optional_consistency"] for r in seed_rows),
                 "optional_consistency_std": safe_std(r["optional_consistency"] for r in seed_rows),
                 "tw_inactive_mass_mean": safe_mean(r["tw_inactive_mass"] for r in seed_rows),

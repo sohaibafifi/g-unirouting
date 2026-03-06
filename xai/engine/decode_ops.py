@@ -18,7 +18,7 @@ from mavrp.env.decoders.ops import (
     compute_action_masks,
     estimate_recourse_trip_cost,
 )
-from utils.math_utils import safe_mean
+from utils.math_utils import safe_mean, safe_std
 
 
 # ---------------------------------------------------------------------------
@@ -92,9 +92,17 @@ def variant_metadata_from_inputs(
 
 
 def init_instance_traces(
-    node_features: torch.Tensor, num_store: int, variant_meta: List[Dict[str, Any]]
+    node_features: torch.Tensor,
+    global_features: torch.Tensor,
+    num_store: int,
+    variant_meta: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     locs = node_features[:num_store, :, :2].detach().cpu().tolist()
+    demand_linehaul = node_features[:num_store, :, 2].detach().cpu().tolist()
+    demand_backhaul = node_features[:num_store, :, 3].detach().cpu().tolist()
+    capacities = global_features[:num_store, 0].detach().cpu().tolist()
+    distance_limits = global_features[:num_store, 3].detach().cpu().tolist()
+    depot_time_limits = global_features[:num_store, 4].detach().cpu().tolist()
     return [
         {
             "instance_index": int(i),
@@ -102,6 +110,11 @@ def init_instance_traces(
             "instance_variant_flags": variant_meta[i]["flags"],
             "instance_active_constraints": variant_meta[i]["active_constraints"],
             "locs": locs[i],
+            "demand_linehaul": demand_linehaul[i],
+            "demand_backhaul": demand_backhaul[i],
+            "vehicle_capacity": float(capacities[i]),
+            "distance_limit": float(distance_limits[i]),
+            "depot_time_limit": float(depot_time_limits[i]),
             "actions": [],
             "done_before": [],
             "done_after": [],
@@ -134,6 +147,23 @@ def init_instance_traces(
             "recourse_triggered": [],
             "recourse_cost_est": [],
             "counterfactuals": [],
+            "solution_features": {
+                "current_time": [],
+                "current_route_length": [],
+                "current_route_length_norm": [],
+                "used_capacity_linehaul_share": [],
+                "used_capacity_backhaul_share": [],
+                "distance_budget_slack": [],
+                "distance_budget_slack_norm": [],
+                "depot_time_budget_slack": [],
+                "depot_time_budget_slack_norm": [],
+                "selected_travel_distance": [],
+                "selected_service_time": [],
+                "selected_wait_time": [],
+                "selected_tw_slack": [],
+                "selected_tw_slack_norm": [],
+                "selected_is_customer": [],
+            },
         }
         for i in range(num_store)
     ]
@@ -195,11 +225,202 @@ def mean_constraint_share_per_step(payloads: Sequence[Any]) -> Dict[str, float]:
     return {name: safe_mean(values) for name, values in per_group.items() if values}
 
 
+def mean_feature_share_per_step(payloads: Sequence[Any]) -> Dict[str, float]:
+    if not payloads:
+        return {}
+    per_feature: Dict[str, List[float]] = defaultdict(list)
+    for payload in payloads:
+        if not isinstance(payload, list):
+            continue
+        step_map: Dict[str, float] = defaultdict(float)
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("feature", "")).strip()
+            if not name:
+                continue
+            try:
+                share = max(float(item.get("share", 0.0)), 0.0)
+            except (TypeError, ValueError):
+                continue
+            step_map[name] += share
+        for name, share in step_map.items():
+            per_feature[name].append(float(share))
+    return {name: safe_mean(values) for name, values in sorted(per_feature.items())}
+
+
+def _top_share_payload(
+    shares: Dict[str, float],
+    field_name: str,
+    top_n: int = 3,
+) -> List[Dict[str, float]]:
+    if not shares:
+        return []
+    ordered = sorted(
+        ((name, max(float(value), 0.0)) for name, value in shares.items()),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    total = sum(value for _, value in ordered)
+    out: List[Dict[str, float]] = []
+    for name, value in ordered[:max(int(top_n), 0)]:
+        out.append(
+            {
+                field_name: str(name),
+                "share": float(value / total) if total > 0 else 0.0,
+            }
+        )
+    return out
+
+
 def dominant_constraint_name(shares: Dict[str, float]) -> str:
     if not shares:
         return "none"
     best_name, best_value = max(shares.items(), key=lambda kv: (float(kv[1]), str(kv[0])))
     return str(best_name) if float(best_value) > 0 else "none"
+
+
+def _finite_values(raw: Sequence[Any]) -> List[float]:
+    out: List[float] = []
+    for value in raw:
+        try:
+            cast = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(cast):
+            out.append(cast)
+    return out
+
+
+def _paired_finite(values: Sequence[Any], flags: Sequence[bool]) -> List[float]:
+    out: List[float] = []
+    for value, flag in zip(values, flags):
+        if not bool(flag):
+            continue
+        try:
+            cast = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(cast):
+            out.append(cast)
+    return out
+
+
+def _share_below(values: Sequence[float], threshold: float) -> float:
+    finite = _finite_values(values)
+    if not finite:
+        return float("nan")
+    hits = sum(1 for value in finite if float(value) <= float(threshold))
+    return float(hits / len(finite))
+
+
+def _share_positive(values: Sequence[float]) -> float:
+    finite = _finite_values(values)
+    if not finite:
+        return float("nan")
+    hits = sum(1 for value in finite if float(value) > 1e-12)
+    return float(hits / len(finite))
+
+
+def _extract_customer_routes(actions: Sequence[int]) -> List[List[int]]:
+    routes: List[List[int]] = []
+    current_route: List[int] = []
+    for raw_action in actions:
+        action = int(raw_action)
+        if action > 0:
+            current_route.append(action)
+            continue
+        if current_route:
+            routes.append(current_route)
+            current_route = []
+    if current_route:
+        routes.append(current_route)
+    return routes
+
+
+def _route_geometry_metrics(
+    locs: Sequence[Sequence[float]],
+    routes: Sequence[Sequence[int]],
+    closed_routes: bool,
+) -> Dict[str, List[float]]:
+    lengths: List[float] = []
+    depths: List[float] = []
+    widths: List[float] = []
+    first_last_ratios: List[float] = []
+    longest_edge_ratios: List[float] = []
+    customer_counts: List[float] = []
+
+    for route in routes:
+        if not route:
+            continue
+        customer_counts.append(float(len(route)))
+
+        edge_distances: List[float] = []
+        prev = 0
+        for node in route:
+            hop = loc_distance(locs, prev, int(node))
+            if math.isfinite(hop):
+                edge_distances.append(float(hop))
+            prev = int(node)
+        if closed_routes:
+            hop_back = loc_distance(locs, prev, 0)
+            if math.isfinite(hop_back):
+                edge_distances.append(float(hop_back))
+
+        route_length = sum(edge_distances)
+        if route_length > 0:
+            lengths.append(float(route_length))
+            longest_edge = max(edge_distances) if edge_distances else float("nan")
+            if math.isfinite(longest_edge):
+                longest_edge_ratios.append(float(longest_edge / route_length))
+            if closed_routes and edge_distances:
+                first_leg = loc_distance(locs, 0, int(route[0]))
+                last_leg = loc_distance(locs, int(route[-1]), 0)
+                if math.isfinite(first_leg) and math.isfinite(last_leg):
+                    first_last_ratios.append(float((first_leg + last_leg) / route_length))
+
+        depot_dists = _finite_values([loc_distance(locs, 0, int(node)) for node in route])
+        if depot_dists:
+            depths.append(float(max(depot_dists)))
+
+        points: List[Tuple[float, float]] = []
+        for node in route:
+            if not (0 <= int(node) < len(locs)):
+                continue
+            xy = locs[int(node)]
+            if len(xy) < 2:
+                continue
+            try:
+                x = float(xy[0])
+                y = float(xy[1])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                points.append((x, y))
+        if points:
+            cx = sum(point[0] for point in points) / len(points)
+            cy = sum(point[1] for point in points) / len(points)
+            radial = [
+                math.hypot(point[0] - cx, point[1] - cy)
+                for point in points
+            ]
+            radial = [float(v) for v in radial if math.isfinite(v)]
+            if radial:
+                widths.append(float(max(radial) - min(radial)))
+
+    return {
+        "route_count": [float(len(routes))] if routes else [],
+        "route_customer_count_mean": [safe_mean(customer_counts)],
+        "route_customer_count_std": [safe_std(customer_counts)],
+        "route_length_mean": [safe_mean(lengths)],
+        "route_length_std": [safe_std(lengths)],
+        "route_depth_mean": [safe_mean(depths)],
+        "route_depth_std": [safe_std(depths)],
+        "route_width_mean": [safe_mean(widths)],
+        "route_width_std": [safe_std(widths)],
+        "route_first_last_edge_ratio_mean": [safe_mean(first_last_ratios)],
+        "route_longest_edge_ratio_mean": [safe_mean(longest_edge_ratios)],
+    }
 
 
 def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -220,6 +441,11 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
     first_recourse_step_norm: List[float] = []
     early_constraint_terms: Dict[str, List[float]] = defaultdict(list)
     late_constraint_terms: Dict[str, List[float]] = defaultdict(list)
+    sf_terms: Dict[str, List[float]] = defaultdict(list)
+    char_constraint_payloads: Dict[str, List[Any]] = defaultdict(list)
+    char_feature_payloads: Dict[str, List[Any]] = defaultdict(list)
+    char_selected_counts: Dict[str, int] = defaultdict(int)
+    char_eligible_counts: Dict[str, int] = defaultdict(int)
 
     for trace in instance_traces:
         actions = [int(v) for v in (trace.get("actions", []) or [])]
@@ -227,6 +453,7 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
             continue
         locs = trace.get("locs", []) or []
         top_constraints = trace.get("top_constraints", []) or []
+        top_features = trace.get("top_features", []) or []
         recourse_flags = [bool(v) for v in (trace.get("recourse_triggered", []) or [])]
         step_count = len(actions)
         stored_steps.append(float(step_count))
@@ -235,9 +462,23 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
         depot_count = sum(1 for action in actions if action == 0)
         customer_actions_per_trace.append(float(customer_count))
         depot_returns_per_trace.append(float(depot_count))
+        char_eligible_counts["depot_return_share"] += int(step_count)
+        char_selected_counts["depot_return_share"] += int(depot_count)
         depot_return_share_per_trace.append(
             float(depot_count / step_count) if step_count > 0 else 0.0
         )
+        payload_limit = min(step_count, len(top_constraints))
+        feature_limit = min(step_count, len(top_features))
+        for step_idx in range(payload_limit):
+            if actions[step_idx] != 0:
+                continue
+            char_constraint_payloads["depot_return_share"].append(
+                top_constraints[step_idx] or []
+            )
+            if step_idx < feature_limit:
+                char_feature_payloads["depot_return_share"].append(
+                    top_features[step_idx] or []
+                )
 
         first_depot = next(
             (idx for idx, action in enumerate(actions) if action == 0), None
@@ -276,6 +517,215 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
         for name, value in late_share.items():
             late_constraint_terms[name].append(float(value))
 
+        solution_features = trace.get("solution_features", {}) or {}
+        is_customer_flags = [
+            bool(v)
+            for v in (solution_features.get("selected_is_customer", []) or [])
+        ]
+        tw_slack_norm = _paired_finite(
+            solution_features.get("selected_tw_slack_norm", []), is_customer_flags
+        )
+        wait_times = _paired_finite(
+            solution_features.get("selected_wait_time", []), is_customer_flags
+        )
+        distance_slack_norm = _finite_values(
+            solution_features.get("distance_budget_slack_norm", [])
+        )
+        recourse_tw_pairs: List[float] = []
+        raw_tw_all = solution_features.get("selected_tw_slack_norm", []) or []
+        for raw_tw, is_customer, recourse in zip(
+            raw_tw_all,
+            is_customer_flags,
+            recourse_flags,
+        ):
+            if not bool(is_customer) or not bool(recourse):
+                continue
+            try:
+                tw_value = float(raw_tw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(tw_value):
+                recourse_tw_pairs.append(tw_value)
+
+        sf_terms["mean_current_time"].append(
+            safe_mean(_finite_values(solution_features.get("current_time", [])))
+        )
+        sf_terms["mean_current_route_length"].append(
+            safe_mean(_finite_values(solution_features.get("current_route_length", [])))
+        )
+        sf_terms["mean_current_route_length_norm"].append(
+            safe_mean(_finite_values(solution_features.get("current_route_length_norm", [])))
+        )
+        sf_terms["mean_used_capacity_linehaul_share"].append(
+            safe_mean(
+                _finite_values(solution_features.get("used_capacity_linehaul_share", []))
+            )
+        )
+        sf_terms["mean_used_capacity_backhaul_share"].append(
+            safe_mean(
+                _finite_values(solution_features.get("used_capacity_backhaul_share", []))
+            )
+        )
+        sf_terms["mean_distance_budget_slack"].append(
+            safe_mean(_finite_values(solution_features.get("distance_budget_slack", [])))
+        )
+        sf_terms["mean_distance_budget_slack_norm"].append(safe_mean(distance_slack_norm))
+        sf_terms["mean_depot_time_budget_slack"].append(
+            safe_mean(_finite_values(solution_features.get("depot_time_budget_slack", [])))
+        )
+        sf_terms["mean_depot_time_budget_slack_norm"].append(
+            safe_mean(
+                _finite_values(solution_features.get("depot_time_budget_slack_norm", []))
+            )
+        )
+        sf_terms["mean_selected_travel_distance"].append(
+            safe_mean(
+                _paired_finite(
+                    solution_features.get("selected_travel_distance", []),
+                    is_customer_flags,
+                )
+            )
+        )
+        sf_terms["mean_selected_service_time"].append(
+            safe_mean(
+                _paired_finite(
+                    solution_features.get("selected_service_time", []),
+                    is_customer_flags,
+                )
+            )
+        )
+        sf_terms["mean_selected_wait_time"].append(safe_mean(wait_times))
+        sf_terms["wait_step_share"].append(_share_positive(wait_times))
+        sf_terms["mean_selected_tw_slack"].append(
+            safe_mean(
+                _paired_finite(
+                    solution_features.get("selected_tw_slack", []),
+                    is_customer_flags,
+                )
+            )
+        )
+        sf_terms["mean_selected_tw_slack_norm"].append(safe_mean(tw_slack_norm))
+        sf_terms["tw_tight_step_share"].append(_share_below(tw_slack_norm, 0.10))
+        sf_terms["tw_critical_step_share"].append(_share_below(tw_slack_norm, 0.05))
+        sf_terms["distance_tight_step_share"].append(
+            _share_below(distance_slack_norm, 0.10)
+        )
+
+        late_start = max(1, step_count // 2)
+        late_tw_norm = _paired_finite(
+            (solution_features.get("selected_tw_slack_norm", []) or [])[late_start:],
+            is_customer_flags[late_start:],
+        )
+        late_dist_norm = _finite_values(
+            (solution_features.get("distance_budget_slack_norm", []) or [])[late_start:]
+        )
+        sf_terms["late_tw_tight_step_share"].append(_share_below(late_tw_norm, 0.10))
+        sf_terms["late_distance_tight_step_share"].append(
+            _share_below(late_dist_norm, 0.10)
+        )
+        sf_terms["recourse_under_tw_tight_share"].append(
+            _share_below(recourse_tw_pairs, 0.10)
+        )
+        for step_idx, (raw_tw, is_customer) in enumerate(
+            zip(raw_tw_all, is_customer_flags)
+        ):
+            if not bool(is_customer):
+                continue
+            try:
+                tw_value = float(raw_tw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(tw_value):
+                continue
+
+            if step_idx >= split_idx:
+                char_eligible_counts["late_tw_tight_step_share"] += 1
+                if tw_value <= 0.10:
+                    char_selected_counts["late_tw_tight_step_share"] += 1
+                    if step_idx < payload_limit:
+                        char_constraint_payloads["late_tw_tight_step_share"].append(
+                            top_constraints[step_idx] or []
+                        )
+                    if step_idx < feature_limit:
+                        char_feature_payloads["late_tw_tight_step_share"].append(
+                            top_features[step_idx] or []
+                        )
+
+            if step_idx < len(recourse_flags) and bool(recourse_flags[step_idx]):
+                char_eligible_counts["recourse_under_tw_tight_share"] += 1
+                if tw_value <= 0.10:
+                    char_selected_counts["recourse_under_tw_tight_share"] += 1
+                    if step_idx < payload_limit:
+                        char_constraint_payloads[
+                            "recourse_under_tw_tight_share"
+                        ].append(top_constraints[step_idx] or [])
+                    if step_idx < feature_limit:
+                        char_feature_payloads["recourse_under_tw_tight_share"].append(
+                            top_features[step_idx] or []
+                        )
+
+        wait_raw = solution_features.get("selected_wait_time", []) or []
+        for step_idx, (raw_wait, is_customer) in enumerate(
+            zip(wait_raw, is_customer_flags)
+        ):
+            if not bool(is_customer):
+                continue
+            try:
+                wait_value = float(raw_wait)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(wait_value):
+                continue
+            char_eligible_counts["wait_step_share"] += 1
+            if wait_value > 1e-12:
+                char_selected_counts["wait_step_share"] += 1
+                if step_idx < payload_limit:
+                    char_constraint_payloads["wait_step_share"].append(
+                        top_constraints[step_idx] or []
+                    )
+                if step_idx < feature_limit:
+                    char_feature_payloads["wait_step_share"].append(
+                        top_features[step_idx] or []
+                    )
+
+        routes = _extract_customer_routes(actions)
+        open_route = bool((trace.get("instance_variant_flags", {}) or {}).get("open_route", False))
+        route_geom = _route_geometry_metrics(
+            locs=locs,
+            routes=routes,
+            closed_routes=(not open_route),
+        )
+        for key, values in route_geom.items():
+            sf_terms[key].append(safe_mean(values))
+
+        capacity = float(trace.get("vehicle_capacity", float("nan")))
+        demand_linehaul = trace.get("demand_linehaul", []) or []
+        demand_backhaul = trace.get("demand_backhaul", []) or []
+        linehaul_utils: List[float] = []
+        backhaul_utils: List[float] = []
+        total_utils: List[float] = []
+        if math.isfinite(capacity) and capacity > 0:
+            for route in routes:
+                linehaul = sum(
+                    float(demand_linehaul[node])
+                    for node in route
+                    if 0 <= int(node) < len(demand_linehaul)
+                )
+                backhaul = sum(
+                    float(demand_backhaul[node])
+                    for node in route
+                    if 0 <= int(node) < len(demand_backhaul)
+                )
+                linehaul_utils.append(float(linehaul / capacity))
+                backhaul_utils.append(float(backhaul / capacity))
+                total_utils.append(float((linehaul + backhaul) / capacity))
+        sf_terms["route_linehaul_utilization_mean"].append(safe_mean(linehaul_utils))
+        sf_terms["route_linehaul_utilization_std"].append(safe_std(linehaul_utils))
+        sf_terms["route_backhaul_utilization_mean"].append(safe_mean(backhaul_utils))
+        sf_terms["route_backhaul_utilization_std"].append(safe_std(backhaul_utils))
+        sf_terms["route_total_utilization_mean"].append(safe_mean(total_utils))
+        sf_terms["route_total_utilization_std"].append(safe_std(total_utils))
+
     early_constraint_share = {
         name: safe_mean(values)
         for name, values in sorted(early_constraint_terms.items())
@@ -286,6 +736,34 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
     }
     early_top = dominant_constraint_name(early_constraint_share)
     late_top = dominant_constraint_name(late_constraint_share)
+    solution_features_summary = {
+        key: safe_mean(values) for key, values in sorted(sf_terms.items())
+    }
+    characteristic_explanations: Dict[str, Dict[str, Any]] = {}
+    for name in sorted(
+        set(char_eligible_counts.keys()) | set(char_selected_counts.keys())
+    ):
+        eligible = int(char_eligible_counts.get(name, 0))
+        selected = int(char_selected_counts.get(name, 0))
+        if eligible <= 0:
+            continue
+        constraint_shares = mean_constraint_share_per_step(
+            char_constraint_payloads.get(name, [])
+        )
+        feature_shares = mean_feature_share_per_step(
+            char_feature_payloads.get(name, [])
+        )
+        characteristic_explanations[name] = {
+            "eligible_step_count": eligible,
+            "selected_step_count": selected,
+            "support_rate": float(selected / eligible),
+            "top_constraints": _top_share_payload(
+                constraint_shares, field_name="constraint", top_n=3
+            ),
+            "top_features": _top_share_payload(
+                feature_shares, field_name="feature", top_n=3
+            ),
+        }
 
     return {
         "basis": "stored_instance_traces",
@@ -307,6 +785,17 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
         "early_top_constraint": early_top,
         "late_top_constraint": late_top,
         "dominant_constraint_shift": f"{early_top}->{late_top}",
+        "solution_features": solution_features_summary,
+        "characteristic_explanations": characteristic_explanations,
+        "mean_selected_tw_slack_norm": solution_features_summary.get(
+            "mean_selected_tw_slack_norm", float("nan")
+        ),
+        "late_tw_tight_step_share": solution_features_summary.get(
+            "late_tw_tight_step_share", float("nan")
+        ),
+        "recourse_under_tw_tight_share": solution_features_summary.get(
+            "recourse_under_tw_tight_share", float("nan")
+        ),
     }
 
 

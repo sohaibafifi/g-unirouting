@@ -129,7 +129,7 @@ class ExplainerEngine:
             else 0
         )
         instance_traces = (
-            init_instance_traces(node_features, num_store, variant_meta)
+            init_instance_traces(node_features, global_features, num_store, variant_meta)
             if num_store > 0
             else []
         )
@@ -592,6 +592,14 @@ class ExplainerEngine:
                 action_feasible_store = action_feasible[:num_store].detach().cpu().tolist()
                 recourse_store = recourse_flags[:num_store].detach().cpu().tolist()
                 recourse_cost_store = recourse_cost_est[:num_store].detach().cpu().tolist()
+                step_solution_feature_store = {
+                    key: values[:num_store].detach().cpu().tolist()
+                    for key, values in _compute_step_solution_features(
+                        common=common,
+                        state=state,
+                        action=action.detach(),
+                    ).items()
+                }
 
                 for i in range(num_store):
                     inst_feat_scores = {
@@ -706,6 +714,7 @@ class ExplainerEngine:
                         contrastive_logprob_gap_store=contrastive_logprob_gap_store,
                         inst_top_contrastive_constraints=inst_top_contrastive_constraints,
                         counterfactual_payload=counterfactual_payload,
+                        step_solution_feature_store=step_solution_feature_store,
                         idx=i,
                     )
 
@@ -967,6 +976,87 @@ def _build_step_record(
     }
 
 
+def _compute_step_solution_features(
+    common: Dict[str, torch.Tensor],
+    state: DecodeState,
+    action: torch.Tensor,
+) -> Dict[str, torch.Tensor]:
+    batch_indices = torch.arange(action.size(0), device=action.device)
+    current_nodes = state.current_node
+
+    leave_time = state.leave_time.squeeze(-1)
+    route_distance = state.distance.squeeze(-1)
+    deliveries = state.deliveries.squeeze(-1)
+    pickups = state.pickups.squeeze(-1)
+    capacities = common["capacities"].squeeze(-1)
+    distance_limits = common["distance_limits"].squeeze(-1)
+    time_limits = common["time_limits"].squeeze(-1)
+
+    travel_distance = common["deltas"][batch_indices, current_nodes, action]
+    arrival_time = leave_time + travel_distance
+    earliest_start = common["earliest_start_time"][batch_indices, action]
+    latest_start = common["latest_start_time"][batch_indices, action]
+    start_time = torch.maximum(arrival_time, earliest_start)
+    wait_time = (start_time - arrival_time).clamp_min(0.0)
+    tw_slack = latest_start - start_time
+    tw_width = latest_start - earliest_start
+    selected_service_time = common["services"][batch_indices, action]
+
+    is_customer = action > 0
+
+    def _safe_div(num: torch.Tensor, den: torch.Tensor) -> torch.Tensor:
+        out = torch.full_like(num, float("nan"))
+        valid = (
+            torch.isfinite(num)
+            & torch.isfinite(den)
+            & (den.abs() > 1e-8)
+        )
+        out[valid] = num[valid] / den[valid]
+        return out
+
+    distance_budget_slack = distance_limits - route_distance
+    depot_time_budget_slack = time_limits - leave_time
+
+    tw_slack = torch.where(
+        is_customer,
+        tw_slack,
+        torch.full_like(tw_slack, float("nan")),
+    )
+    tw_width = torch.where(
+        is_customer,
+        tw_width,
+        torch.full_like(tw_width, float("nan")),
+    )
+    selected_service_time = torch.where(
+        is_customer,
+        selected_service_time,
+        torch.full_like(selected_service_time, float("nan")),
+    )
+    wait_time = torch.where(
+        is_customer,
+        wait_time,
+        torch.full_like(wait_time, float("nan")),
+    )
+
+    return {
+        "current_time": leave_time,
+        "current_route_length": route_distance,
+        "current_route_length_norm": _safe_div(route_distance, distance_limits),
+        "used_capacity_linehaul_share": _safe_div(deliveries, capacities),
+        "used_capacity_backhaul_share": _safe_div(pickups, capacities),
+        "distance_budget_slack": distance_budget_slack,
+        "distance_budget_slack_norm": _safe_div(distance_budget_slack, distance_limits),
+        "depot_time_budget_slack": depot_time_budget_slack,
+        "depot_time_budget_slack_norm": _safe_div(depot_time_budget_slack, time_limits),
+        "selected_travel_distance": travel_distance,
+        "selected_service_time": selected_service_time,
+        "selected_wait_time": wait_time,
+        "selected_tw_slack": tw_slack,
+        "selected_tw_slack_norm": _safe_div(tw_slack, tw_width),
+        "selected_is_customer": is_customer.to(route_distance.dtype),
+    }
+
+
 def _accumulate_counterfactual(
     payload: Optional[Dict[str, Any]],
     available_history: List[float],
@@ -1042,6 +1132,7 @@ def _update_instance_trace(
     contrastive_logprob_gap_store: List,
     inst_top_contrastive_constraints: List,
     counterfactual_payload: Optional[Dict[str, Any]],
+    step_solution_feature_store: Dict[str, List],
 ) -> None:
     i = idx
     trace["done_before"].append(bool(done_before[i].item()))
@@ -1166,6 +1257,15 @@ def _update_instance_trace(
     trace["recourse_triggered"].append(bool(recourse_store[i]))
     trace["recourse_cost_est"].append(float(recourse_cost_store[i]))
     trace["counterfactuals"].append(counterfactual_payload)
+    if isinstance(trace.get("solution_features", None), dict):
+        for key, values in step_solution_feature_store.items():
+            if not isinstance(values, list) or i >= len(values):
+                continue
+            series = trace["solution_features"].setdefault(key, [])
+            try:
+                series.append(float(values[i]))
+            except (TypeError, ValueError):
+                series.append(float("nan"))
 
 
 def _build_summary(
