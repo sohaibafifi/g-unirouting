@@ -876,6 +876,190 @@ def _format_report_trajectory(summary: dict) -> List[str]:
     return items
 
 
+def _category_fallbacks() -> List[Tuple[str, str]]:
+    return [
+        (
+            "Explication abductive",
+            "Pas de signal saillant dans cette catégorie à cette étape",
+        ),
+        (
+            "Explication contrastive",
+            "Pas d'alternative contrastive exploitable à cette étape",
+        ),
+        (
+            "Deletion faithfulness",
+            "Pas de mesure step-level disponible à cette étape",
+        ),
+        (
+            "Contrefactuels locaux",
+            "Aucun contrefactuel local simple trouvé à cette étape",
+        ),
+    ]
+
+
+def _step_payload_with_deletion(
+    trace: Dict[str, Any],
+    step: int,
+    step_records: List[Any],
+) -> Tuple[int, str, Dict[str, List[str]]]:
+    payload = explain_step_structured(trace, step)
+    step_idx = int(payload.get("step", step))
+    summary = str(payload.get("summary", "hors plage"))
+    categories = dict(payload.get("categories", {}) or {})
+
+    deletion_items: List[str] = []
+    if 0 <= step_idx < len(step_records) and isinstance(step_records[step_idx], dict):
+        deletion_items = _format_step_deletion(step_records[step_idx])
+    categories["Deletion faithfulness"] = deletion_items
+
+    normalized: Dict[str, List[str]] = {}
+    for category_name, _ in _category_fallbacks():
+        normalized[category_name] = [
+            str(item) for item in categories.get(category_name, []) if str(item)
+        ]
+    return step_idx, summary, normalized
+
+
+def _render_bundle_step_first_lines(
+    report: Dict[str, Any],
+    report_path: Path,
+    instance_index: int,
+    steps_raw: str | None,
+) -> List[str]:
+    method_payloads: List[Dict[str, Any]] = []
+    report_refs = report.get("reports", {}) or {}
+    all_steps: set[int] = set()
+
+    for method_key in ["gradient", "integrated_gradients"]:
+        ref = report_refs.get(method_key)
+        if not isinstance(ref, dict):
+            continue
+        candidate = Path(str(ref.get("path_resolved") or ref.get("path") or "").strip())
+        if not candidate.exists():
+            continue
+
+        method_report = _load_json(candidate)
+        instances = method_report.get("instances", [])
+        if not isinstance(instances, list) or not instances:
+            continue
+        if not (0 <= instance_index < len(instances)):
+            raise ValueError(
+                f"Invalid instance index {instance_index} for method report {candidate}. "
+                f"Available range: [0, {len(instances)-1}]"
+            )
+
+        trace = instances[instance_index]
+        actions = trace.get("actions", [])
+        step_records = method_report.get("steps", []) or []
+        method_steps = _parse_step_list(steps_raw, len(actions))
+        all_steps.update(method_steps)
+
+        step_map: Dict[int, Dict[str, Any]] = {}
+        for step in method_steps:
+            step_idx, summary, categories = _step_payload_with_deletion(
+                trace=trace, step=step, step_records=step_records
+            )
+            step_map[step_idx] = {"summary": summary, "categories": categories}
+
+        cfg = method_report.get("config", {}) or {}
+        variant_code = str(trace.get("instance_variant_code", "")).strip()
+        variant_flags = trace.get("instance_variant_flags", {})
+        active_constraints = trace.get("instance_active_constraints", [])
+
+        method_payloads.append(
+            {
+                "label": _method_heading(method_report),
+                "report_path": candidate,
+                "mode": cfg.get("node_importance_mode", "decision-only"),
+                "num_steps": len(actions),
+                "variant_code": variant_code,
+                "variant_flags": variant_flags,
+                "active_constraints": active_constraints,
+                "trajectory": _summarize_trace_trajectory(trace, include_reading=True),
+                "steps": step_map,
+            }
+        )
+
+    if not method_payloads:
+        raise ValueError(
+            f"Bundle has no usable method reports with instances: {report_path}"
+        )
+
+    lines: List[str] = []
+    lines.append("## Contexte")
+    lines.append("")
+    lines.append(f"- bundle: `{report_path}`")
+    lines.append(f"- instance: `{instance_index}`")
+    lines.append("")
+    lines.extend(_explanation_category_lines())
+
+    lines.append("## Méthodes")
+    lines.append("")
+    for payload in method_payloads:
+        lines.append(f"- {payload['label']}")
+        lines.append(f"  - report: `{payload['report_path']}`")
+        lines.append(f"  - nombre_etapes: `{payload['num_steps']}`")
+        lines.append(f"  - mode_importance_noeud: `{payload['mode']}`")
+        variant_code = str(payload.get("variant_code", "")).strip()
+        if variant_code:
+            lines.append(f"  - variante_instance: `{variant_code}`")
+        variant_flags = payload.get("variant_flags", {})
+        if isinstance(variant_flags, dict) and variant_flags:
+            lines.append(f"  - drapeaux_variante: `{variant_flags}`")
+        active_constraints = payload.get("active_constraints", [])
+        if isinstance(active_constraints, list):
+            lines.append(
+                "  - contraintes_instance: "
+                f"`{_format_variant_constraints(active_constraints)}`"
+            )
+    lines.append("")
+
+    lines.append("## Trajectoire de l'instance (par méthode)")
+    lines.append("")
+    for payload in method_payloads:
+        lines.append(f"- {payload['label']}")
+        trajectory_items = [str(item) for item in payload.get("trajectory", []) if str(item)]
+        if not trajectory_items:
+            lines.append("  - Aucune trajectoire stockée pour cette méthode")
+        else:
+            for item in trajectory_items:
+                lines.append(f"  - {item}")
+    lines.append("")
+
+    lines.append("## Etapes")
+    lines.append("")
+    for step in sorted(all_steps):
+        lines.append(f"### Etape {step}")
+        lines.append("")
+        lines.append("- Décision")
+        for payload in method_payloads:
+            step_data = payload["steps"].get(step)
+            if step_data is None:
+                lines.append(f"  - {payload['label']}: hors plage")
+            else:
+                lines.append(f"  - {payload['label']}: {step_data['summary']}")
+
+        for category_name, fallback in _category_fallbacks():
+            lines.append(f"- {category_name}")
+            for payload in method_payloads:
+                lines.append(f"  - {payload['label']}")
+                step_data = payload["steps"].get(step)
+                if step_data is None:
+                    entries = ["Étape indisponible pour cette méthode"]
+                else:
+                    entries = [
+                        str(item)
+                        for item in step_data.get("categories", {}).get(category_name, [])
+                        if str(item)
+                    ]
+                    if not entries:
+                        entries = [fallback]
+                for item in entries:
+                    lines.append(f"    - {item}")
+        lines.append("")
+    return lines
+
+
 def explain_step_structured(trace: dict, step: int) -> dict:
     locs = np.array(trace["locs"], dtype=float)
     actions = [int(a) for a in trace.get("actions", [])]
@@ -1320,34 +1504,14 @@ def _render_document_for_instance(
     lines: List[str] = ["# Explications Textuelles XAI", ""]
 
     if str(report.get("kind", "")).strip() == "xai_dual_bundle":
-        report_refs = report.get("reports", {}) or {}
-        lines.append("## Contexte")
-        lines.append("")
-        lines.append(f"- bundle: `{report_path}`")
-        lines.append(f"- instance: `{instance_index}`")
-        lines.append("")
-        lines.extend(_explanation_category_lines())
-
-        for method_key in ["gradient", "integrated_gradients"]:
-            ref = report_refs.get(method_key)
-            if not isinstance(ref, dict):
-                continue
-            candidate = Path(
-                str(ref.get("path_resolved") or ref.get("path") or "").strip()
-            )
-            if not candidate.exists():
-                continue
-            method_report = _load_json(candidate)
-            lines.append(f"## Méthode: {_method_heading(method_report)}")
-            lines.append("")
-            section_lines, _ = _render_single_report_lines(
-                report=method_report,
-                report_path=candidate,
+        lines.extend(
+            _render_bundle_step_first_lines(
+                report=report,
+                report_path=report_path,
                 instance_index=instance_index,
                 steps_raw=steps_raw,
-                heading_prefix="###",
             )
-            lines.extend(section_lines)
+        )
     else:
         section_lines, _ = _render_single_report_lines(
             report=report,
@@ -1427,36 +1591,16 @@ def _render_single_report_lines(
     lines.append(f"{heading_prefix} Etapes")
     lines.append("")
     for step in steps:
-        payload = explain_step_structured(trace, step)
-        step_idx = int(payload.get("step", step))
-        summary = str(payload.get("summary", "hors plage"))
-        categories = dict(payload.get("categories", {}) or {})
-        deletion_items: List[str] = []
-        if 0 <= step_idx < len(step_records) and isinstance(step_records[step_idx], dict):
-            deletion_items = _format_step_deletion(step_records[step_idx])
-        categories["Deletion faithfulness"] = deletion_items
+        step_idx, summary, categories = _step_payload_with_deletion(
+            trace=trace,
+            step=step,
+            step_records=step_records,
+        )
         lines.append(f"- Etape {step_idx}")
         lines.append(f"  - Décision: {summary}")
-        for category_name, fallback in [
-            (
-                "Explication abductive",
-                "Pas de signal saillant dans cette catégorie à cette étape",
-            ),
-            (
-                "Explication contrastive",
-                "Pas d'alternative contrastive exploitable à cette étape",
-            ),
-            (
-                "Deletion faithfulness",
-                "Pas de mesure step-level disponible à cette étape",
-            ),
-            (
-                "Contrefactuels locaux",
-                "Aucun contrefactuel local simple trouvé à cette étape",
-            ),
-        ]:
+        for category_name, fallback in _category_fallbacks():
             lines.append(f"  - {category_name}")
-            entries = [str(item) for item in categories.get(category_name, []) if str(item)]
+            entries = categories.get(category_name, [])
             if not entries:
                 entries = [fallback]
             for item in entries:
