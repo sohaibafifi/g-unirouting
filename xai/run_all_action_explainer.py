@@ -5,11 +5,14 @@ import argparse
 import glob
 import json
 import subprocess
+import sys
 
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import torch
 
 
 @dataclass
@@ -299,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--checkpoints-glob", default="output/*/*/*/baseline.pt")
-    parser.add_argument("--python-bin", default=".venv/bin/python")
+    parser.add_argument("--python-bin", default=".venv/bin/python" if sys.platform != "win32" else ".venv\\Scripts\\python.exe")
     parser.add_argument("--num-instances", type=int, default=128)
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument(
@@ -321,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["mean-fill", "zero-with-customers-at-depot", "zero-all", "zero-with-current-locs"],
         default="mean-fill",
     )
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-instances-to-store", type=int, default=8)
     parser.add_argument("--model-filter", default=None)
     parser.add_argument("--max-runs", type=int, default=None)
