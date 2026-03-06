@@ -244,7 +244,7 @@ def run_batch(args: argparse.Namespace) -> int:
     for i, (spec, repeat_no, run_seed) in enumerate(queued, start=1):
         cmd = [
             args.python_bin,
-            "xai-poo/action_explainer.py",
+            "xai/action_explainer.py",
             f"--checkpoint={spec.checkpoint_path}",
             f"--num-instances={args.num_instances}",
             f"--max-steps={args.max_steps}",
@@ -298,7 +298,7 @@ def run_batch(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run xai-poo/action_explainer.py for all g-unirouting checkpoints."
+        description="Run xai/action_explainer.py for all g-unirouting checkpoints."
     )
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--checkpoints-glob", default="output/*/*/*/baseline.pt")

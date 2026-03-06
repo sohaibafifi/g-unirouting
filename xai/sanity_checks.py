@@ -65,7 +65,7 @@ def _build_randomized_cmd(report: Dict[str, Any], args: argparse.Namespace) -> L
 
     cmd = [
         args.python_bin,
-        "xai-poo/action_explainer.py",
+        "xai/action_explainer.py",
         f"--checkpoint={checkpoint}",
         f"--num-instances={int(cfg.get('num_instances', args.num_instances_fallback))}",
         f"--max-steps={int(cfg.get('max_steps', args.max_steps_fallback))}",

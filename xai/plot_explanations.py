@@ -310,6 +310,66 @@ def _dominant_constraint(step_payload: object) -> tuple[str, float]:
     return best_name, best_share
 
 
+def _top_step_payload_items(
+    step_payload: object, field_name: str, limit: int = 6
+) -> list[tuple[str, float]]:
+    if not isinstance(step_payload, list) or not step_payload:
+        return []
+    items: list[tuple[str, float]] = []
+    for item in step_payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get(field_name, "")).strip()
+        if not name:
+            continue
+        try:
+            share = max(float(item.get("share", 0.0)), 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(share):
+            continue
+        items.append((name, share))
+    items.sort(key=lambda entry: entry[1], reverse=True)
+    return items[:limit]
+
+
+def _plot_step_payload_bars(
+    ax,
+    step_payload: object,
+    *,
+    field_name: str,
+    title: str,
+    x_label: str = "share",
+) -> None:
+    items = _top_step_payload_items(step_payload, field_name=field_name, limit=6)
+    if not items:
+        ax.text(0.5, 0.5, "No step attribution", ha="center", va="center")
+        ax.set_axis_off()
+        return
+
+    if field_name == "constraint":
+        labels = [CONSTRAINT_LABELS.get(name, name) for name, _ in items]
+        colors = [
+            CONSTRAINT_COLORS.get(name, CONSTRAINT_COLORS["other"])
+            for name, _ in items
+        ]
+    else:
+        labels = [name for name, _ in items]
+        colors = ["#f58518"] * len(items)
+    values = [value for _, value in items]
+
+    y_pos = np.arange(len(labels), dtype=float)
+    ax.barh(y_pos, values, color=colors, alpha=0.9)
+    ax.set_yticks(y_pos, labels)
+    ax.invert_yaxis()
+    ax.set_xlim(0.0, max(max(values) * 1.15, 0.05))
+    ax.set_xlabel(x_label)
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.2)
+    for y, value in zip(y_pos, values):
+        ax.text(value + 0.005, y, f"{value:.2f}", va="center", fontsize=8)
+
+
 def _trajectory_plot_summary(
     locs: np.ndarray,
     actions: List[int],
@@ -916,6 +976,7 @@ def _plot_single_report(
         done_before = [bool(v) for v in trace.get("done_before", [])]
         done_step = trace.get("done_step", None)
         top_constraints_all = trace.get("top_constraints", [])
+        top_features_all = trace.get("top_features", [])
         recourse_flags = [bool(v) for v in trace.get("recourse_triggered", [])]
         chosen_feasible_all = [bool(v) for v in trace.get("chosen_feasible", [])]
 
@@ -984,11 +1045,21 @@ def _plot_single_report(
                 if step < len(chosen_feasible_all)
                 else True
             )
+            top_constraints_step = (
+                top_constraints_all[step]
+                if step < len(top_constraints_all)
+                else []
+            )
+            top_features_step = (
+                top_features_all[step]
+                if step < len(top_features_all)
+                else []
+            )
 
-            fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), constrained_layout=True)
-            _plot_route(axes[0], locs, actions, done_step)
+            fig, axes = plt.subplots(2, 2, figsize=(13.5, 8.5), constrained_layout=True)
+            _plot_route(axes[0, 0], locs, actions, done_step)
             _plot_step_explanation(
-                axes[1],
+                axes[0, 1],
                 locs,
                 actions,
                 top_nodes,
@@ -998,6 +1069,18 @@ def _plot_single_report(
                 chosen_feasible_step,
                 recourse_step,
                 recourse_cost_step,
+            )
+            _plot_step_payload_bars(
+                axes[1, 0],
+                top_constraints_step,
+                field_name="constraint",
+                title="Top Constraints (Step)",
+            )
+            _plot_step_payload_bars(
+                axes[1, 1],
+                top_features_step,
+                field_name="feature",
+                title="Top Features (Step)",
             )
 
             recourse_txt = (
