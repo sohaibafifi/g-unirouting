@@ -326,9 +326,7 @@ class ExplainerEngine:
                 instance_contrastive_feature_attr[name] = contrastive_inst_score
                 per_feature_contrastive_attr[name].append(contrastive_mean_score)
 
-            decision_node_attr_history.append(
-                float(decision_node_scores[:, 1:].mean().item())
-            )
+            decision_node_attr_history.append(float(decision_node_scores.mean().item()))
 
             # ----------------------------------------------------------
             # Feasibility importance (gradient-only)
@@ -354,9 +352,8 @@ class ExplainerEngine:
             else:
                 node_scores = decision_node_scores
 
-            feasibility_node_scores[:, 0] = 0.0
             feasibility_node_attr_history.append(
-                float(feasibility_node_scores[:, 1:].mean().item())
+                float(feasibility_node_scores.mean().item())
             )
 
             # ----------------------------------------------------------

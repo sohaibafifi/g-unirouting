@@ -1099,13 +1099,10 @@ def grad_to_node_scores(
 
 def normalize_node_scores(node_scores: torch.Tensor) -> torch.Tensor:
     scores = node_scores.clone()
-    if scores.size(-1) <= 1:
-        return scores.zero_()
-    customer_scores = scores[:, 1:]
-    max_scores = customer_scores.max(dim=-1, keepdim=True).values.clamp_min(1e-8)
-    scores[:, 1:] = customer_scores / max_scores
-    scores[:, 0] = 0.0
-    return scores
+    if scores.numel() == 0:
+        return scores
+    max_scores = scores.max(dim=-1, keepdim=True).values.clamp_min(1e-8)
+    return scores / max_scores
 
 
 def top_nodes_and_scores(
@@ -1282,7 +1279,6 @@ def compute_feasibility_node_scores(
         updated = torch.maximum(prev, sensitivity)
         scores.scatter_(-1, node_idx.unsqueeze(-1), updated.unsqueeze(-1))
 
-    scores[:, 0] = 0.0
     return scores
 
 

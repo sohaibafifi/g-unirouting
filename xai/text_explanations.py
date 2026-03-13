@@ -400,17 +400,17 @@ def _format_step_deletion(step_payload: dict) -> List[str]:
     if math.isfinite(best_flip):
         if best_flip >= 0.7:
             lines.append(
-                f"Lecture: les noeuds les plus attribués paraissent très fidèles ici; "
-                f"perturber le top-{best_k} change la décision dans {best_flip * 100.0:.1f}% des cas"
+                f"Lecture: les clients les plus attribués paraissent très fidèles ici; "
+                f"perturber le top-{best_k} clients change la décision dans {best_flip * 100.0:.1f}% des cas"
             )
         elif best_flip >= 0.4:
             lines.append(
-                f"Lecture: fidélité intermédiaire; perturber le top-{best_k} "
+                f"Lecture: fidélité intermédiaire; perturber le top-{best_k} clients "
                 f"change la décision dans {best_flip * 100.0:.1f}% des cas"
             )
         else:
             lines.append(
-                f"Lecture: fidélité faible à modérée; même en perturbant le top-{best_k}, "
+                f"Lecture: fidélité faible à modérée; même en perturbant le top-{best_k} clients, "
                 f"la décision ne change que dans {best_flip * 100.0:.1f}% des cas"
             )
 
@@ -422,7 +422,7 @@ def _format_step_deletion(step_payload: dict) -> List[str]:
         )
         if monotone:
             lines.append(
-                "Lecture: comme attendu, perturber davantage de noeuds attribués déstabilise au moins autant la décision"
+                "Lecture: comme attendu, perturber davantage de clients attribués déstabilise au moins autant la décision"
             )
 
     for item in entries:
@@ -1448,7 +1448,7 @@ def _explanation_category_lines() -> List[str]:
         "",
         "- Explication abductive: pourquoi ce nœud est choisi à cette étape (top nodes, top features, top constraints).",
         "- Explication contrastive: pourquoi ce nœud est choisi plutôt que la meilleure alternative disponible.",
-        "- Deletion faithfulness: si on perturbe les nœuds les plus attribués, est-ce que la décision change réellement ?",
+        "- Deletion faithfulness: si on perturbe les clients les plus attribués, est-ce que la décision change réellement ?",
         "- Contrefactuels locaux: quel petit changement concret pourrait faire basculer la décision ou rendre l'alternative faisable ?",
         "- Trajectoire globale: quel style global de tournée se dégage de la trace stockée ?",
         "",

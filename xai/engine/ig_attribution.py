@@ -136,7 +136,6 @@ class IGAttribution(AttributionBase):
             node_score = grad_to_node_scores(grad_by_feature.get(name), num_nodes)
             if node_score is not None:
                 decision_node_scores = decision_node_scores + node_score
-        decision_node_scores[:, 0] = 0.0
 
         return grad_by_feature, contrastive_grad_by_feature, decision_node_scores
 
