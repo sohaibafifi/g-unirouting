@@ -44,9 +44,13 @@ from engine.decode_ops import (
 )
 from domain.score_ops import (
     aggregate_constraint_scores,
+    aggregate_decoder_dynamic_state_scores,
+    aggregate_decoder_state_constraint_scores,
     feature_to_constraint_group as _feature_to_constraint_group,
     top_constraint_payload,
+    top_decoder_dynamic_state_payload,
     top_feature_payload,
+    top_state_payload,
 )
 from utils.math_utils import masked_mean, safe_mean
 from utils.text_utils import slugify
@@ -142,6 +146,7 @@ class ExplainerEngine:
         per_feature_contrastive_attr: Dict[str, List[float]] = defaultdict(list)
         per_constraint_attr: Dict[str, List[float]] = defaultdict(list)
         per_constraint_contrastive_attr: Dict[str, List[float]] = defaultdict(list)
+        per_decoder_state_constraint_attr: Dict[str, List[float]] = defaultdict(list)
         recourse_rate_history: List[float] = []
         recourse_cost_est_history: List[float] = []
         chosen_feasible_rate_history: List[float] = []
@@ -396,19 +401,69 @@ class ExplainerEngine:
             # ----------------------------------------------------------
             # Constraint aggregation
             # ----------------------------------------------------------
+            step_solution_features = _compute_step_solution_features(
+                common=common,
+                state=state,
+                action=action.detach(),
+            )
             top_features_payload = top_feature_payload(step_feature_attr_mean, top_n=3)
             step_constraint_attr_mean = aggregate_constraint_scores(step_feature_attr_mean)
-            top_constraints_payload = top_constraint_payload(step_constraint_attr_mean, top_n=None)
             step_contrastive_constraint_attr_mean = aggregate_constraint_scores(
                 step_contrastive_feature_attr_mean
             )
             top_contrastive_constraints_payload = top_constraint_payload(
                 step_contrastive_constraint_attr_mean, top_n=None
             )
+            step_decoder_state_constraint_scores: List[Dict[str, float]] = []
+            step_decoder_state_constraint_mean_terms: Dict[str, List[float]] = defaultdict(list)
+            step_decoder_dynamic_state_mean_terms: Dict[str, List[float]] = defaultdict(list)
+            for i in range(batch_size):
+                inst_solution_features = {
+                    key: float(values[i].detach().item())
+                    for key, values in step_solution_features.items()
+                }
+                inst_decoder_state_scores = aggregate_decoder_state_constraint_scores(
+                    solution_features=inst_solution_features,
+                    variant_flags=variant_meta[i].get("flags", {}),
+                )
+                step_decoder_state_constraint_scores.append(inst_decoder_state_scores)
+                for group_name, score in inst_decoder_state_scores.items():
+                    step_decoder_state_constraint_mean_terms[group_name].append(float(score))
+                inst_decoder_dynamic_state_scores = aggregate_decoder_dynamic_state_scores(
+                    constraint_scores=inst_decoder_state_scores,
+                    solution_features=inst_solution_features,
+                    variant_flags=variant_meta[i].get("flags", {}),
+                )
+                for state_name, score in inst_decoder_dynamic_state_scores.items():
+                    step_decoder_dynamic_state_mean_terms[state_name].append(
+                        float(score)
+                    )
+            top_constraints_payload = top_constraint_payload(step_constraint_attr_mean, top_n=None)
+            top_constraint_states_payload: List[Dict[str, float]] = []
+            step_decoder_state_constraint_mean = {
+                key: safe_mean(values)
+                for key, values in sorted(step_decoder_state_constraint_mean_terms.items())
+            }
+            top_decoder_state_constraints_payload = top_constraint_payload(
+                step_decoder_state_constraint_mean,
+                top_n=None,
+            )
+            step_decoder_dynamic_state_mean = {
+                key: safe_mean(values)
+                for key, values in sorted(
+                    step_decoder_dynamic_state_mean_terms.items()
+                )
+            }
+            top_decoder_dynamic_states_payload = top_state_payload(
+                step_decoder_dynamic_state_mean,
+                top_n=None,
+            )
             for group_name, score in step_constraint_attr_mean.items():
                 per_constraint_attr[group_name].append(float(score))
             for group_name, score in step_contrastive_constraint_attr_mean.items():
                 per_constraint_contrastive_attr[group_name].append(float(score))
+            for group_name, score in step_decoder_state_constraint_mean.items():
+                per_decoder_state_constraint_attr[group_name].append(float(score))
 
             # ----------------------------------------------------------
             # Deletion faithfulness
@@ -490,6 +545,12 @@ class ExplainerEngine:
                         done_ratio=done_ratio,
                         top_features=top_features_payload,
                         top_constraints=top_constraints_payload,
+                        top_constraint_states=top_constraint_states_payload,
+                        decoder_state_constraints=top_decoder_state_constraints_payload,
+                        decoder_dynamic_states=top_decoder_dynamic_states_payload,
+                        decoder_state_constraint_states=(
+                            top_decoder_dynamic_states_payload
+                        ),
                         feature_attr_mean=step_feature_attr_mean,
                         constraint_attr_mean=step_constraint_attr_mean,
                         contrastive_alt_available_rate=float(has_alt.float().mean().item()),
@@ -591,11 +652,7 @@ class ExplainerEngine:
                 recourse_cost_store = recourse_cost_est[:num_store].detach().cpu().tolist()
                 step_solution_feature_store = {
                     key: values[:num_store].detach().cpu().tolist()
-                    for key, values in _compute_step_solution_features(
-                        common=common,
-                        state=state,
-                        action=action.detach(),
-                    ).items()
+                    for key, values in step_solution_features.items()
                 }
 
                 for i in range(num_store):
@@ -608,6 +665,11 @@ class ExplainerEngine:
                     inst_top_constraints = top_constraint_payload(
                         inst_constraint_scores, top_n=None
                     )
+                    inst_solution_features = {
+                        key: float(values[i])
+                        for key, values in step_solution_feature_store.items()
+                    }
+                    inst_top_constraint_states: List[Dict[str, float]] = []
                     inst_contrastive_feat_scores = {
                         key: float(instance_contrastive_feature_attr[key][i].item())
                         for key in instance_contrastive_feature_attr
@@ -617,6 +679,16 @@ class ExplainerEngine:
                     )
                     inst_top_contrastive_constraints = top_constraint_payload(
                         inst_contrastive_constraint_scores, top_n=None
+                    )
+                    inst_decoder_state_constraints = top_constraint_payload(
+                        step_decoder_state_constraint_scores[i],
+                        top_n=None,
+                    )
+                    inst_decoder_dynamic_states = top_decoder_dynamic_state_payload(
+                        constraint_scores=step_decoder_state_constraint_scores[i],
+                        solution_features=inst_solution_features,
+                        variant_flags=variant_meta[i].get("flags", {}),
+                        top_n=None,
                     )
 
                     # Counterfactual grads: local non-IG for IG, batch slice for gradient
@@ -690,6 +762,12 @@ class ExplainerEngine:
                         use_feasibility_importance=use_feasibility_importance,
                         inst_top_features=inst_top_features,
                         inst_top_constraints=inst_top_constraints,
+                        inst_top_constraint_states=inst_top_constraint_states,
+                        inst_decoder_state_constraints=inst_decoder_state_constraints,
+                        inst_decoder_dynamic_states=inst_decoder_dynamic_states,
+                        inst_decoder_state_constraint_states=(
+                            inst_decoder_dynamic_states
+                        ),
                         has_alt_policy_store=has_alt_policy_store,
                         alt_action_policy_store=alt_action_policy_store,
                         alt_action_policy_feasible_store=alt_action_policy_feasible_store,
@@ -739,6 +817,7 @@ class ExplainerEngine:
             per_k_flip_rate=per_k_flip_rate,
             per_feature_attr=per_feature_attr,
             per_constraint_attr=per_constraint_attr,
+            per_decoder_state_constraint_attr=per_decoder_state_constraint_attr,
             contrastive_alt_available_history=contrastive_alt_available_history,
             contrastive_logit_gap_history=contrastive_logit_gap_history,
             contrastive_logprob_gap_history=contrastive_logprob_gap_history,
@@ -930,6 +1009,10 @@ def _build_step_record(
     done_ratio: float,
     top_features: List[Dict[str, float]],
     top_constraints: List[Dict[str, float]],
+    top_constraint_states: List[Dict[str, float]],
+    decoder_state_constraints: List[Dict[str, float]],
+    decoder_dynamic_states: List[Dict[str, float]],
+    decoder_state_constraint_states: List[Dict[str, float]],
     feature_attr_mean: Dict[str, float],
     constraint_attr_mean: Dict[str, float],
     contrastive_alt_available_rate: float,
@@ -955,6 +1038,10 @@ def _build_step_record(
         "top1_nodes": top1_nodes.detach().cpu().tolist(),
         "top_features": top_features,
         "top_constraints": top_constraints,
+        "top_constraint_states": top_constraint_states,
+        "decoder_state_constraints": decoder_state_constraints,
+        "decoder_dynamic_states": decoder_dynamic_states,
+        "decoder_state_constraint_states": decoder_state_constraint_states,
         "feature_attr_mean": feature_attr_mean,
         "constraint_attr_mean": constraint_attr_mean,
         "contrastive": {
@@ -1108,6 +1195,10 @@ def _update_instance_trace(
     use_feasibility_importance: bool,
     inst_top_features: List,
     inst_top_constraints: List,
+    inst_top_constraint_states: List,
+    inst_decoder_state_constraints: List,
+    inst_decoder_dynamic_states: List,
+    inst_decoder_state_constraint_states: List,
     has_alt_policy_store: List,
     alt_action_policy_store: List,
     alt_action_policy_feasible_store: List,
@@ -1188,6 +1279,10 @@ def _update_instance_trace(
 
     trace["top_features"].append(inst_top_features)
     trace["top_constraints"].append(inst_top_constraints)
+    trace["top_constraint_states"].append(inst_top_constraint_states)
+    trace["decoder_state_constraints"].append(inst_decoder_state_constraints)
+    trace["decoder_dynamic_states"].append(inst_decoder_dynamic_states)
+    trace["decoder_state_constraint_states"].append(inst_decoder_state_constraint_states)
 
     if has_alt_policy_store[i]:
         trace["contrastive_policy_alt_action"].append(int(alt_action_policy_store[i]))
@@ -1278,6 +1373,7 @@ def _build_summary(
     per_k_flip_rate: Dict[int, List[float]],
     per_feature_attr: Dict[str, List[float]],
     per_constraint_attr: Dict[str, List[float]],
+    per_decoder_state_constraint_attr: Dict[str, List[float]],
     contrastive_alt_available_history: List[float],
     contrastive_logit_gap_history: List[float],
     contrastive_logprob_gap_history: List[float],
@@ -1327,6 +1423,10 @@ def _build_summary(
         "constraint_importance_mean": {
             key: safe_mean(per_constraint_attr[key])
             for key in sorted(per_constraint_attr.keys())
+        },
+        "decoder_state_constraint_importance_mean": {
+            key: safe_mean(per_decoder_state_constraint_attr[key])
+            for key in sorted(per_decoder_state_constraint_attr.keys())
         },
         "contrastive": {
             "alt_available_rate": safe_mean(contrastive_alt_available_history),
@@ -1381,6 +1481,18 @@ def _build_summary(
     summary["constraint_importance_share"] = {
         key: (value / constraint_total if constraint_total > 0 else 0.0)
         for key, value in summary["constraint_importance_mean"].items()
+    }
+
+    decoder_state_constraint_total = sum(
+        summary["decoder_state_constraint_importance_mean"].values()
+    )
+    summary["decoder_state_constraint_importance_share"] = {
+        key: (
+            value / decoder_state_constraint_total
+            if decoder_state_constraint_total > 0
+            else 0.0
+        )
+        for key, value in summary["decoder_state_constraint_importance_mean"].items()
     }
 
     contrastive_feature_total = sum(

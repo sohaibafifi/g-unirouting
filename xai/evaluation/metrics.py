@@ -116,16 +116,19 @@ def variant_mix_across_reports(reports: List[Dict[str, Any]]) -> str:
 def constraint_share(payload: List[Dict[str, Any]], constraint_name: str) -> float:
     aliases = [constraint_name]
     if constraint_name == "route_structure":
-        aliases.append("route_recourse")
+        aliases.extend(["route_recourse", "route_openness", "flow_structure"])
     elif constraint_name == "route_recourse":
-        aliases.append("route_structure")
+        aliases.extend(["route_structure", "route_openness", "flow_structure"])
+    elif constraint_name == "space_distance":
+        aliases.extend(["geometry", "distance_limit"])
+    total = 0.0
     for item in payload or []:
         if str(item.get("constraint", "")) in aliases:
             try:
-                return max(float(item.get("share", 0.0)), 0.0)
+                total += max(float(item.get("share", 0.0)), 0.0)
             except (TypeError, ValueError):
-                return 0.0
-    return 0.0
+                continue
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +229,7 @@ def _fallback_trajectory_metrics(traces: List[Dict[str, Any]]) -> Dict[str, floa
         locs = trace.get("locs", []) or []
         recourse_flags = [bool(v) for v in (trace.get("recourse_triggered", []) or [])]
         top_constraints = trace.get("top_constraints", []) or []
+        decoder_state_constraints = trace.get("decoder_state_constraints", []) or []
 
         depot_count = sum(1 for action in actions if action == 0)
         depot_returns.append(float(depot_count))
@@ -250,7 +254,12 @@ def _fallback_trajectory_metrics(traces: List[Dict[str, Any]]) -> Dict[str, floa
         recourse_bursts.append(float(bursts))
 
         split_idx = max(1, len(actions) // 2)
-        late_constraints = top_constraints[split_idx:] or top_constraints[:split_idx]
+        late_constraints = (
+            decoder_state_constraints[split_idx:]
+            or decoder_state_constraints[:split_idx]
+            or top_constraints[split_idx:]
+            or top_constraints[:split_idx]
+        )
         for payload in late_constraints:
             late_capacity_terms.append(constraint_share(payload or [], "capacity_demands"))
 
@@ -314,7 +323,9 @@ def trajectory_metrics(
 ) -> Dict[str, float]:
     trajectory = summary.get("trajectory", {}) or {}
     if trajectory:
-        late_share = trajectory.get("late_constraint_share", {}) or {}
+        late_share = (
+            trajectory.get("late_decoder_state_constraint_share", {}) or {}
+        ) or (trajectory.get("late_constraint_share", {}) or {})
         solution = trajectory.get("solution_features", {}) or {}
         return {
             "trajectory_depot_returns": float(

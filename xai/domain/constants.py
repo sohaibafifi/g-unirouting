@@ -30,11 +30,40 @@ FEATURE_SPEC_BY_NAME: Dict[str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 CONSTRAINT_GROUP_RULES: List[Tuple[str, set]] = [
-    ("space_distance", {"locs", "distance_limit"}),
+    ("geometry", {"locs"}),
+    ("distance_limit", {"distance_limit"}),
     ("time_windows_service", {"time_windows", "service_time", "depot_tw_end"}),
     ("capacity_demands", {"demand_linehaul", "demand_backhaul", "vehicle_capacity"}),
-    ("route_structure", {"open_route", "mixed_backhaul", "has_backhaul"}),
+    ("route_openness", {"open_route"}),
+    ("flow_structure", {"mixed_backhaul", "has_backhaul"}),
 ]
+
+CONSTRAINT_FAMILIES: Tuple[str, ...] = tuple(name for name, _ in CONSTRAINT_GROUP_RULES)
+
+CONSTRAINT_STATE_TO_FAMILY: Dict[str, str] = {
+    "short_hop": "geometry",
+    "medium_hop": "geometry",
+    "long_hop": "geometry",
+    "has_distance_limit": "distance_limit",
+    "no_distance_limit": "distance_limit",
+    "distance_slack_high": "distance_limit",
+    "distance_slack_medium": "distance_limit",
+    "distance_slack_low": "distance_limit",
+    "has_time_windows": "time_windows_service",
+    "no_time_windows": "time_windows_service",
+    "no_tw": "time_windows_service",
+    "tw_slack_high": "time_windows_service",
+    "tw_slack_medium": "time_windows_service",
+    "tw_slack_low": "time_windows_service",
+    "load_low": "capacity_demands",
+    "load_medium": "capacity_demands",
+    "load_high": "capacity_demands",
+    "closed_route": "route_openness",
+    "open_route": "route_openness",
+    "linehaul_only": "flow_structure",
+    "backhaul": "flow_structure",
+    "mixed_backhaul": "flow_structure",
+}
 
 # ---------------------------------------------------------------------------
 # Counterfactual perturbation specs
@@ -98,21 +127,78 @@ COUNTERFACTUAL_SPECS: List[Dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 CONSTRAINT_COLORS: Dict[str, str] = {
+    "geometry": "#4c78a8",
+    "distance_limit": "#9c755f",
     "space_distance": "#4c78a8",
     "time_windows_service": "#f58518",
     "capacity_demands": "#54a24b",
+    "route_openness": "#e45756",
+    "flow_structure": "#72b7b2",
     "route_structure": "#e45756",
     "route_recourse": "#e45756",
     "other": "#b279a2",
 }
 
+for _state_name, _family_name in CONSTRAINT_STATE_TO_FAMILY.items():
+    CONSTRAINT_COLORS.setdefault(_state_name, CONSTRAINT_COLORS[_family_name])
+
+for _legacy_state, _legacy_family in {
+    "geometry_only": "geometry",
+    "loose_limit": "distance_limit",
+    "service_only": "time_windows_service",
+    "loose_tw": "time_windows_service",
+    "closed_linehaul": "flow_structure",
+    "open_linehaul": "flow_structure",
+    "closed_backhaul": "flow_structure",
+    "open_backhaul": "flow_structure",
+    "closed_mixed_backhaul": "flow_structure",
+    "open_mixed_backhaul": "flow_structure",
+}.items():
+    CONSTRAINT_COLORS.setdefault(_legacy_state, CONSTRAINT_COLORS[_legacy_family])
+
 CONSTRAINT_LABELS_EN: Dict[str, str] = {
-    "space_distance": "space / distance",
+    "geometry": "geometry",
+    "distance_limit": "distance limit",
     "time_windows_service": "time windows / service",
     "capacity_demands": "capacity / demands",
+    "route_openness": "route openness",
+    "flow_structure": "flow structure",
     "route_structure": "route structure",
     "route_recourse": "route structure",
     "other": "other",
+    "short_hop": "short hop",
+    "medium_hop": "medium hop",
+    "long_hop": "long hop",
+    "has_distance_limit": "distance limit active",
+    "no_distance_limit": "no distance limit",
+    "distance_slack_high": "high distance slack",
+    "distance_slack_medium": "medium distance slack",
+    "distance_slack_low": "low distance slack",
+    "has_time_windows": "time windows active",
+    "no_time_windows": "no time windows",
+    "no_tw": "no time windows",
+    "tw_slack_high": "high TW slack",
+    "tw_slack_medium": "medium TW slack",
+    "tw_slack_low": "low TW slack",
+    "load_low": "low load",
+    "load_medium": "medium load",
+    "load_high": "high load",
+    "closed_route": "closed route",
+    "open_route": "open route",
+    "linehaul_only": "linehaul only",
+    "backhaul": "backhaul",
+    "mixed_backhaul": "mixed backhaul",
+    "space_distance": "space / distance",
+    "geometry_only": "geometry only",
+    "loose_limit": "loose distance limit",
+    "service_only": "service only",
+    "loose_tw": "loose time windows",
+    "closed_linehaul": "closed linehaul",
+    "open_linehaul": "open linehaul",
+    "closed_backhaul": "closed backhaul",
+    "open_backhaul": "open backhaul",
+    "closed_mixed_backhaul": "closed mixed backhaul",
+    "open_mixed_backhaul": "open mixed backhaul",
 }
 
 # ---------------------------------------------------------------------------
@@ -139,12 +225,48 @@ FEATURE_LABELS_FR: Dict[str, str] = {
 }
 
 CONSTRAINT_LABELS_FR: Dict[str, str] = {
-    "space_distance": "géométrie et distance",
+    "geometry": "géométrie",
+    "distance_limit": "limite de distance",
     "time_windows_service": "fenêtres de temps et service",
     "capacity_demands": "capacités et demandes",
+    "route_openness": "ouverture de route",
+    "flow_structure": "structure de flux",
     "route_structure": "structure de route",
     "route_recourse": "structure de route",
     "other": "autres signaux",
+    "short_hop": "trajet court",
+    "medium_hop": "trajet intermédiaire",
+    "long_hop": "trajet long",
+    "has_distance_limit": "limite de distance active",
+    "no_distance_limit": "pas de limite distance",
+    "distance_slack_high": "grande marge de distance",
+    "distance_slack_medium": "marge de distance intermédiaire",
+    "distance_slack_low": "faible marge de distance",
+    "has_time_windows": "fenêtres de temps actives",
+    "no_time_windows": "sans fenêtres de temps",
+    "no_tw": "sans fenêtres de temps",
+    "tw_slack_high": "grande marge TW",
+    "tw_slack_medium": "marge TW intermédiaire",
+    "tw_slack_low": "faible marge TW",
+    "load_low": "charge faible",
+    "load_medium": "charge moyenne",
+    "load_high": "charge élevée",
+    "closed_route": "route fermée",
+    "open_route": "route ouverte",
+    "linehaul_only": "linehaul seul",
+    "backhaul": "backhaul",
+    "mixed_backhaul": "backhaul mixte",
+    "space_distance": "géométrie et distance",
+    "geometry_only": "géométrie sans limite",
+    "loose_limit": "limite distance large",
+    "service_only": "service sans fenêtres de temps",
+    "loose_tw": "fenêtres de temps larges",
+    "closed_linehaul": "route fermée linehaul",
+    "open_linehaul": "route ouverte linehaul",
+    "closed_backhaul": "route fermée backhaul",
+    "open_backhaul": "route ouverte backhaul",
+    "closed_mixed_backhaul": "route fermée mixed backhaul",
+    "open_mixed_backhaul": "route ouverte mixed backhaul",
 }
 
 COUNTERFACTUAL_FEATURE_LABELS_FR: Dict[str, str] = {

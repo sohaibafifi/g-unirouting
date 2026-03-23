@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from mavrp.env.models import TransformerModel
 
 from domain.constants import CONSTRAINT_GROUP_RULES, COUNTERFACTUAL_SPECS, FEATURE_SPEC_BY_NAME
+from domain.score_ops import instance_structural_constraint_payload
 from engine.decode_types import DecodeCache, DecodeState
 from mavrp.env.decoders.ops import (
     build_common,
@@ -109,6 +110,9 @@ def init_instance_traces(
             "instance_variant_code": variant_meta[i]["code"],
             "instance_variant_flags": variant_meta[i]["flags"],
             "instance_active_constraints": variant_meta[i]["active_constraints"],
+            "instance_structural_constraints": instance_structural_constraint_payload(
+                variant_meta[i]["flags"]
+            ),
             "locs": locs[i],
             "demand_linehaul": demand_linehaul[i],
             "demand_backhaul": demand_backhaul[i],
@@ -126,6 +130,10 @@ def init_instance_traces(
             "top_scores_feasibility": [],
             "top_features": [],
             "top_constraints": [],
+            "top_constraint_states": [],
+            "decoder_state_constraints": [],
+            "decoder_state_constraint_states": [],
+            "decoder_dynamic_states": [],
             "contrastive_policy_alt_action": [],
             "contrastive_policy_alt_feasible": [],
             "contrastive_policy_alt_recourse": [],
@@ -223,6 +231,33 @@ def mean_constraint_share_per_step(payloads: Sequence[Any]) -> Dict[str, float]:
         for name in known_groups:
             per_group[name].append(step_map[name])
     return {name: safe_mean(values) for name, values in per_group.items() if values}
+
+
+def mean_named_share_per_step(
+    payloads: Sequence[Any],
+    field_name: str = "constraint",
+) -> Dict[str, float]:
+    if not payloads:
+        return {}
+    per_name: Dict[str, List[float]] = defaultdict(list)
+    for payload in payloads:
+        if not isinstance(payload, list):
+            continue
+        step_map: Dict[str, float] = defaultdict(float)
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get(field_name, "")).strip()
+            if not name:
+                continue
+            try:
+                share = max(float(item.get("share", 0.0)), 0.0)
+            except (TypeError, ValueError):
+                continue
+            step_map[name] += share
+        for name, share in step_map.items():
+            per_name[name].append(float(share))
+    return {name: safe_mean(values) for name, values in sorted(per_name.items())}
 
 
 def mean_feature_share_per_step(payloads: Sequence[Any]) -> Dict[str, float]:
@@ -441,6 +476,12 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
     first_recourse_step_norm: List[float] = []
     early_constraint_terms: Dict[str, List[float]] = defaultdict(list)
     late_constraint_terms: Dict[str, List[float]] = defaultdict(list)
+    early_constraint_state_terms: Dict[str, List[float]] = defaultdict(list)
+    late_constraint_state_terms: Dict[str, List[float]] = defaultdict(list)
+    early_decoder_state_constraint_terms: Dict[str, List[float]] = defaultdict(list)
+    late_decoder_state_constraint_terms: Dict[str, List[float]] = defaultdict(list)
+    early_decoder_dynamic_state_terms: Dict[str, List[float]] = defaultdict(list)
+    late_decoder_dynamic_state_terms: Dict[str, List[float]] = defaultdict(list)
     sf_terms: Dict[str, List[float]] = defaultdict(list)
     char_constraint_payloads: Dict[str, List[Any]] = defaultdict(list)
     char_feature_payloads: Dict[str, List[Any]] = defaultdict(list)
@@ -453,6 +494,13 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
             continue
         locs = trace.get("locs", []) or []
         top_constraints = trace.get("top_constraints", []) or []
+        top_constraint_states = trace.get("top_constraint_states", []) or []
+        decoder_state_constraints = trace.get("decoder_state_constraints", []) or []
+        decoder_dynamic_states = (
+            trace.get("decoder_dynamic_states", []) or []
+        ) or (
+            trace.get("decoder_state_constraint_states", []) or []
+        )
         top_features = trace.get("top_features", []) or []
         recourse_flags = [bool(v) for v in (trace.get("recourse_triggered", []) or [])]
         step_count = len(actions)
@@ -512,10 +560,51 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
         late_share = mean_constraint_share_per_step(top_constraints[split_idx:])
         if not late_share and early_share:
             late_share = dict(early_share)
+        early_decoder_state_share = mean_constraint_share_per_step(
+            decoder_state_constraints[:split_idx]
+        )
+        late_decoder_state_share = mean_constraint_share_per_step(
+            decoder_state_constraints[split_idx:]
+        )
+        if not late_decoder_state_share and early_decoder_state_share:
+            late_decoder_state_share = dict(early_decoder_state_share)
         for name, value in early_share.items():
             early_constraint_terms[name].append(float(value))
         for name, value in late_share.items():
             late_constraint_terms[name].append(float(value))
+        early_constraint_state_share = mean_named_share_per_step(
+            top_constraint_states[:split_idx]
+        )
+        late_constraint_state_share = mean_named_share_per_step(
+            top_constraint_states[split_idx:]
+        )
+        if not late_constraint_state_share and early_constraint_state_share:
+            late_constraint_state_share = dict(early_constraint_state_share)
+        for name, value in early_constraint_state_share.items():
+            early_constraint_state_terms[name].append(float(value))
+        for name, value in late_constraint_state_share.items():
+            late_constraint_state_terms[name].append(float(value))
+        for name, value in early_decoder_state_share.items():
+            early_decoder_state_constraint_terms[name].append(float(value))
+        for name, value in late_decoder_state_share.items():
+            late_decoder_state_constraint_terms[name].append(float(value))
+        early_decoder_dynamic_state_share = mean_named_share_per_step(
+            decoder_dynamic_states[:split_idx]
+        )
+        late_decoder_dynamic_state_share = mean_named_share_per_step(
+            decoder_dynamic_states[split_idx:]
+        )
+        if (
+            not late_decoder_dynamic_state_share
+            and early_decoder_dynamic_state_share
+        ):
+            late_decoder_dynamic_state_share = dict(
+                early_decoder_dynamic_state_share
+            )
+        for name, value in early_decoder_dynamic_state_share.items():
+            early_decoder_dynamic_state_terms[name].append(float(value))
+        for name, value in late_decoder_dynamic_state_share.items():
+            late_decoder_dynamic_state_terms[name].append(float(value))
 
         solution_features = trace.get("solution_features", {}) or {}
         is_customer_flags = [
@@ -734,8 +823,46 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
         name: safe_mean(values)
         for name, values in sorted(late_constraint_terms.items())
     }
+    early_constraint_state_share = {
+        name: safe_mean(values)
+        for name, values in sorted(early_constraint_state_terms.items())
+    }
+    late_constraint_state_share = {
+        name: safe_mean(values)
+        for name, values in sorted(late_constraint_state_terms.items())
+    }
+    early_decoder_state_constraint_share = {
+        name: safe_mean(values)
+        for name, values in sorted(early_decoder_state_constraint_terms.items())
+    }
+    late_decoder_state_constraint_share = {
+        name: safe_mean(values)
+        for name, values in sorted(late_decoder_state_constraint_terms.items())
+    }
+    early_decoder_dynamic_state_share = {
+        name: safe_mean(values)
+        for name, values in sorted(early_decoder_dynamic_state_terms.items())
+    }
+    late_decoder_dynamic_state_share = {
+        name: safe_mean(values)
+        for name, values in sorted(late_decoder_dynamic_state_terms.items())
+    }
     early_top = dominant_constraint_name(early_constraint_share)
     late_top = dominant_constraint_name(late_constraint_share)
+    early_top_state = dominant_constraint_name(early_constraint_state_share)
+    late_top_state = dominant_constraint_name(late_constraint_state_share)
+    early_decoder_state_top = dominant_constraint_name(
+        early_decoder_state_constraint_share
+    )
+    late_decoder_state_top = dominant_constraint_name(
+        late_decoder_state_constraint_share
+    )
+    early_decoder_dynamic_top = dominant_constraint_name(
+        early_decoder_dynamic_state_share
+    )
+    late_decoder_dynamic_top = dominant_constraint_name(
+        late_decoder_dynamic_state_share
+    )
     solution_features_summary = {
         key: safe_mean(values) for key, values in sorted(sf_terms.items())
     }
@@ -785,6 +912,32 @@ def summarize_trajectory(instance_traces: Sequence[Dict[str, Any]]) -> Dict[str,
         "early_top_constraint": early_top,
         "late_top_constraint": late_top,
         "dominant_constraint_shift": f"{early_top}->{late_top}",
+        "early_constraint_state_share": early_constraint_state_share,
+        "late_constraint_state_share": late_constraint_state_share,
+        "early_top_constraint_state": early_top_state,
+        "late_top_constraint_state": late_top_state,
+        "dominant_constraint_state_shift": f"{early_top_state}->{late_top_state}",
+        "early_decoder_state_constraint_share": early_decoder_state_constraint_share,
+        "late_decoder_state_constraint_share": late_decoder_state_constraint_share,
+        "early_top_decoder_state_constraint": early_decoder_state_top,
+        "late_top_decoder_state_constraint": late_decoder_state_top,
+        "dominant_decoder_state_constraint_shift": (
+            f"{early_decoder_state_top}->{late_decoder_state_top}"
+        ),
+        "early_decoder_dynamic_state_share": early_decoder_dynamic_state_share,
+        "late_decoder_dynamic_state_share": late_decoder_dynamic_state_share,
+        "early_top_decoder_dynamic_state": early_decoder_dynamic_top,
+        "late_top_decoder_dynamic_state": late_decoder_dynamic_top,
+        "dominant_decoder_dynamic_state_shift": (
+            f"{early_decoder_dynamic_top}->{late_decoder_dynamic_top}"
+        ),
+        "early_decoder_state_constraint_state_share": early_decoder_dynamic_state_share,
+        "late_decoder_state_constraint_state_share": late_decoder_dynamic_state_share,
+        "early_top_decoder_state_constraint_state": early_decoder_dynamic_top,
+        "late_top_decoder_state_constraint_state": late_decoder_dynamic_top,
+        "dominant_decoder_state_constraint_state_shift": (
+            f"{early_decoder_dynamic_top}->{late_decoder_dynamic_top}"
+        ),
         "solution_features": solution_features_summary,
         "characteristic_explanations": characteristic_explanations,
         "mean_selected_tw_slack_norm": solution_features_summary.get(
