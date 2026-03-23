@@ -589,3 +589,27 @@ class IGBaselineTablePrinter:
             )
             table.add_row(row["baseline"], metrics)
         console.print(table)
+
+
+class MethodComparisonTablePrinter:
+    """Prints a compact comparison table for attribution methods."""
+
+    def print(self, rows: List[Dict[str, Any]], topk_values: List[int], title: str) -> None:
+        def _fmt(value: float) -> str:
+            import math
+            return "n/a" if not math.isfinite(float(value)) else f"{float(value):.4f}"
+
+        console = Console()
+        table = Table(title=title)
+        table.add_column("method")
+        table.add_column("metrics")
+        for row in rows:
+            flips = " ".join(f"flip@{k}={_fmt(row[f'flip@{k}'])}" for k in topk_values)
+            metrics = (
+                f"f1={_fmt(row['focus@1'])} f3={_fmt(row['focus@3'])}\n"
+                f"clr={_fmt(row['clarity'])} ctr={_fmt(row['contrast'])}\n"
+                f"{flips}\n"
+                f"rec={_fmt(row['recourse'])} feas={_fmt(row['feasible'])}"
+            )
+            table.add_row(str(row["method"]), metrics)
+        console.print(table)

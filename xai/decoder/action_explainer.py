@@ -15,10 +15,14 @@ if __package__ in {None, ""}:
 import lightning as L
 
 from engine.attribution import GradientAttribution
+from engine.deeplift_attribution import DeepLiftAttribution
 from engine.explainer_engine import ExplainerEngine
 from engine.ig_attribution import IGAttribution
 from engine.model_io import ModelLoader, randomize_model_weights
 from utils.text_utils import slugify
+
+
+METHOD_ORDER = ["gradient", "integrated_gradients", "deeplift"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--attribution-methods",
         default="gradient,integrated_gradients",
-        help="Comma-separated: gradient, integrated_gradients.",
+        help="Comma-separated: gradient, integrated_gradients, deeplift.",
     )
     parser.add_argument("--feasibility-weight", type=float, default=None)
     parser.add_argument("--feasibility-top-m", type=int, default=8)
@@ -57,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--ig-baseline",
         choices=["mean-fill", "zero-with-customers-at-depot", "zero-all", "zero-with-current-locs"],
         default="mean-fill",
+        help="Reference baseline used by integrated gradients and DeepLIFT.",
     )
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -83,10 +88,12 @@ def _parse_attribution_methods(raw: str):
             key = "gradient"
         elif token in {"integrated_gradients", "ig"}:
             key = "integrated_gradients"
+        elif token in {"deeplift", "deep_lift", "deep-lift", "dl"}:
+            key = "deeplift"
         else:
             raise ValueError(
                 f"Unsupported attribution method {token!r}. "
-                "Use 'gradient' and/or 'integrated_gradients'."
+                "Use 'gradient', 'integrated_gradients', and/or 'deeplift'."
             )
         if key not in normalized:
             normalized.append(key)
@@ -112,10 +119,14 @@ def _run_single(
 
     if method == "gradient":
         attribution = GradientAttribution()
-    else:
+    elif method == "integrated_gradients":
         attribution = IGAttribution(
             ig_steps=int(args.ig_steps), ig_baseline=str(args.ig_baseline)
         )
+    elif method == "deeplift":
+        attribution = DeepLiftAttribution(baseline_mode=str(args.ig_baseline))
+    else:
+        raise ValueError(f"Unsupported attribution method: {method}")
 
     engine = ExplainerEngine(
         model=model,
@@ -131,12 +142,11 @@ def _run_single(
 
 def _build_bundle(
     output_dir: Path,
-    gradient_path: Optional[Path],
-    ig_path: Optional[Path],
+    report_paths: Dict[str, Optional[Path]],
 ) -> Optional[Path]:
     present = {
         key: path
-        for key, path in [("gradient", gradient_path), ("integrated_gradients", ig_path)]
+        for key, path in report_paths.items()
         if path is not None
     }
     if len(present) <= 1:
@@ -145,6 +155,8 @@ def _build_bundle(
     payload: Dict[str, Any] = {
         "kind": "xai_dual_bundle",
         "timestamp": int(time.time()),
+        "methods": [method for method in METHOD_ORDER if method in present]
+        + sorted(method for method in present if method not in METHOD_ORDER),
         "reports": {
             key: {"path": str(path), "path_resolved": str(path.resolve())}
             for key, path in present.items()
@@ -191,14 +203,13 @@ def main() -> None:
     loader = ModelLoader(args)
     loader.resolve()
 
-    out = {"gradient": None, "integrated_gradients": None}
+    out = {method: None for method in methods}
     for method in methods:
         out[method] = _run_single(args, loader, method)
 
     _build_bundle(
         output_dir=Path(args.output_dir),
-        gradient_path=out["gradient"],
-        ig_path=out["integrated_gradients"],
+        report_paths=out,
     )
 
 

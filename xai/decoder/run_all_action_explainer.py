@@ -34,10 +34,12 @@ def _parse_attribution_methods(raw: str) -> List[str]:
             key = "gradient"
         elif token in {"integrated_gradients", "ig"}:
             key = "integrated_gradients"
+        elif token in {"deeplift", "deep_lift", "deep-lift", "dl"}:
+            key = "deeplift"
         else:
             raise ValueError(
                 f"Unsupported attribution method {token!r}. "
-                "Use 'gradient' and/or 'integrated_gradients'."
+                "Use 'gradient', 'integrated_gradients', and/or 'deeplift'."
             )
         if key not in values:
             values.append(key)
@@ -62,9 +64,9 @@ def _discover_specs(project_root: Path, pattern: str) -> List[RunSpec]:
     return specs
 
 
-def _existing_reports(project_root: Path) -> List[Dict[str, Any]]:
+def _existing_reports(output_dir: Path) -> List[Dict[str, Any]]:
     reports: List[Dict[str, Any]] = []
-    for path in sorted((project_root / "logs" / "xai").glob("action_explainer_*.json")):
+    for path in sorted(output_dir.glob("action_explainer_*.json")):
         try:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
@@ -84,12 +86,23 @@ def _seed_for_repeat(args: argparse.Namespace, repeat_idx: int) -> Optional[int]
 
 def _report_method(report_cfg: Dict[str, Any]) -> str:
     method = str(report_cfg.get("attribution_method", "")).strip().lower()
-    if method in {"gradient", "integrated_gradients"}:
+    if method in {"gradient", "integrated_gradients", "deeplift"}:
         return method
     label = str(report_cfg.get("model_label", "")).strip().lower()
     if "[ig:" in label:
         return "integrated_gradients"
+    if "[deeplift:" in label or "[deep-lift:" in label:
+        return "deeplift"
     return "gradient"
+
+
+def _report_reference_baseline(report_cfg: Dict[str, Any]) -> str:
+    return str(
+        report_cfg.get("reference_baseline")
+        or report_cfg.get("ig_baseline")
+        or report_cfg.get("deeplift_baseline")
+        or ""
+    ).strip()
 
 
 def _report_matches_spec(
@@ -170,7 +183,10 @@ def _matching_seed_counter(
                     continue
             except Exception:
                 continue
-            if str(cfg.get("ig_baseline", "")).strip() != str(args.ig_baseline).strip():
+            if _report_reference_baseline(cfg) != str(args.ig_baseline).strip():
+                continue
+        elif method == "deeplift":
+            if _report_reference_baseline(cfg) != str(args.ig_baseline).strip():
                 continue
         raw_seed = cfg.get("seed", None)
         seed_value = None if raw_seed in (None, "") else int(raw_seed)
@@ -181,6 +197,9 @@ def _matching_seed_counter(
 
 def run_batch(args: argparse.Namespace) -> int:
     project_root = Path(args.project_root).resolve()
+    output_dir = Path(args.output_dir)
+    if not output_dir.is_absolute():
+        output_dir = (project_root / output_dir).resolve()
     if args.repeats < 1:
         raise ValueError("--repeats must be >= 1")
     if args.repeats > 1 and args.seed is None:
@@ -200,7 +219,7 @@ def run_batch(args: argparse.Namespace) -> int:
         print("No runnable checkpoints found.")
         return 0
 
-    existing_reports = _existing_reports(project_root) if args.skip_existing else []
+    existing_reports = _existing_reports(output_dir) if args.skip_existing else []
     queued: List[tuple] = []
     for spec in specs:
         seed_counter = (
@@ -259,6 +278,7 @@ def run_batch(args: argparse.Namespace) -> int:
             f"--ig-steps={args.ig_steps}",
             f"--ig-baseline={args.ig_baseline}",
             f"--max-instances-to-store={args.max_instances_to_store}",
+            f"--output-dir={output_dir}",
         ]
         if args.feasibility_weight is not None:
             cmd.append(f"--feasibility-weight={args.feasibility_weight}")
@@ -304,6 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run xai/action_explainer.py for all g-unirouting checkpoints."
     )
     parser.add_argument("--project-root", default=".")
+    parser.add_argument("--output-dir", default="logs/xai")
     parser.add_argument("--checkpoints-glob", default="output/*/*/*/baseline.pt")
     parser.add_argument("--python-bin", default=".venv/bin/python" if sys.platform != "win32" else ".venv\\Scripts\\python.exe")
     parser.add_argument("--num-instances", type=int, default=128)

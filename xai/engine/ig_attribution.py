@@ -80,6 +80,15 @@ class IGAttribution(AttributionBase):
         self._base_node: Optional[torch.Tensor] = None
         self._base_global: Optional[torch.Tensor] = None
 
+    def method_key(self) -> str:
+        return "integrated_gradients"
+
+    def uses_reference_baseline(self) -> bool:
+        return True
+
+    def needs_local_counterfactual_grads(self) -> bool:
+        return True
+
     def set_baseline(
         self,
         node_features: torch.Tensor,
@@ -89,6 +98,13 @@ class IGAttribution(AttributionBase):
         self._base_node, self._base_global = build_ig_baseline(
             node_features, global_features, self.ig_baseline
         )
+
+    def prepare_inputs(
+        self,
+        node_features: torch.Tensor,
+        global_features: torch.Tensor,
+    ) -> None:
+        self.set_baseline(node_features, global_features)
 
     def compute_step(
         self,
@@ -141,7 +157,8 @@ class IGAttribution(AttributionBase):
 
     def summary(self) -> Dict[str, Any]:
         return {
-            "attribution_method": "integrated_gradients",
+            "attribution_method": self.method_key(),
+            "reference_baseline": self.ig_baseline,
             "ig_steps": self.ig_steps,
             "ig_baseline": self.ig_baseline,
         }

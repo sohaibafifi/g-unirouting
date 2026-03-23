@@ -111,6 +111,13 @@ def _format_structural_constraints(items: List[dict]) -> str:
     return ", ".join(labels)
 
 
+def _bundle_method_order(report_refs: dict) -> List[str]:
+    preferred = ["gradient", "integrated_gradients", "deeplift"]
+    ordered = [method for method in preferred if method in report_refs]
+    ordered.extend(sorted(method for method in report_refs if method not in ordered))
+    return ordered
+
+
 def _top_share_items(payload: object, limit: int = 5) -> list[tuple[str, float]]:
     if not isinstance(payload, dict):
         return []
@@ -1338,7 +1345,7 @@ def main() -> None:
 
     if str(report.get("kind", "")).strip() == "xai_dual_bundle":
         report_refs = report.get("reports", {}) or {}
-        for method_key in ["gradient", "integrated_gradients"]:
+        for method_key in _bundle_method_order(report_refs):
             ref = report_refs.get(method_key)
             if not isinstance(ref, dict):
                 continue

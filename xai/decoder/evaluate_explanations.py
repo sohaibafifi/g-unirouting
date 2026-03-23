@@ -52,7 +52,7 @@ def main() -> None:
     parser.add_argument("--pattern", default="logs/xai/action_explainer_*.json")
     parser.add_argument(
         "--method-filter",
-        choices=["all", "gradient", "integrated_gradients"],
+        choices=["all", "gradient", "integrated_gradients", "deeplift"],
         default="all",
     )
     parser.add_argument("--latest", type=int, default=None)
@@ -110,10 +110,12 @@ def main() -> None:
     layout = args.table_layout if args.table_layout != "wide" else "wide"
     EvalTablePrinter(layout=layout).print(report_rows)
 
-    ig_reports = [r for r in reports if report_method(r) == "integrated_gradients"]
-    if ig_reports:
+    baseline_reports = [
+        r for r in reports if report_method(r) in {"integrated_gradients", "deeplift"}
+    ]
+    if baseline_reports:
         DeletionTablePrinter(layout=layout).print(
-            deletion_rows(ig_reports, aggregate=do_aggregate)
+            deletion_rows(baseline_reports, aggregate=do_aggregate)
         )
 
     if args.stability_mode == "robustness":

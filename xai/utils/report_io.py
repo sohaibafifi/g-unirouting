@@ -79,11 +79,13 @@ class ReportFilter:
         def _method(report: Dict[str, Any]) -> str:
             cfg = report.get("data", {}).get("config", {}) or {}
             m = str(cfg.get("attribution_method", "")).strip().lower()
-            if m in {"integrated_gradients", "gradient"}:
+            if m in {"integrated_gradients", "gradient", "deeplift"}:
                 return m
             label = str(cfg.get("model_label", "")).strip().lower()
             if "[ig:" in label:
                 return "integrated_gradients"
+            if "[deeplift:" in label or "[deep-lift:" in label:
+                return "deeplift"
             return "gradient"
 
         if method == "all":

@@ -167,6 +167,13 @@ def _trace_instance_structural_constraints(trace: dict) -> List[dict]:
     return trace.get("instance_structural_constraints", []) or []
 
 
+def _bundle_method_order(report_refs: Dict[str, Any]) -> List[str]:
+    preferred = ["gradient", "integrated_gradients", "deeplift"]
+    ordered = [method for method in preferred if method in report_refs]
+    ordered.extend(sorted(method for method in report_refs if method not in ordered))
+    return ordered
+
+
 def _constraint_payload_reading_lines(
     top_constraints: List[dict],
     source_label: str,
@@ -1045,7 +1052,7 @@ def _render_bundle_step_first_lines(
     report_refs = report.get("reports", {}) or {}
     all_steps: set[int] = set()
 
-    for method_key in ["gradient", "integrated_gradients"]:
+    for method_key in _bundle_method_order(report_refs):
         ref = report_refs.get(method_key)
         if not isinstance(ref, dict):
             continue
@@ -1635,12 +1642,19 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 def _method_heading(report: Dict[str, Any]) -> str:
     cfg = report.get("config", {}) or {}
-    method = str(cfg.get("attribution_method", "")).strip()
+    method = str(cfg.get("attribution_method", "")).strip().lower()
     if method == "integrated_gradients":
-        baseline = str(cfg.get("ig_baseline", "")).strip()
+        baseline = str(cfg.get("reference_baseline") or cfg.get("ig_baseline") or "").strip()
         if baseline:
             return f"Integrated Gradients ({baseline})"
         return "Integrated Gradients"
+    if method == "deeplift":
+        baseline = str(
+            cfg.get("reference_baseline") or cfg.get("deeplift_baseline") or cfg.get("ig_baseline") or ""
+        ).strip()
+        if baseline:
+            return f"DeepLIFT ({baseline})"
+        return "DeepLIFT"
     return "Gradient local"
 
 
@@ -1650,7 +1664,7 @@ def _first_bundle_instance_count(report: Dict[str, Any], bundle_path: Path) -> i
         return len(instances) if isinstance(instances, list) else 0
 
     report_refs = report.get("reports", {}) or {}
-    for method_key in ["gradient", "integrated_gradients"]:
+    for method_key in _bundle_method_order(report_refs):
         ref = report_refs.get(method_key)
         if not isinstance(ref, dict):
             continue

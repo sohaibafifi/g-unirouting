@@ -44,6 +44,7 @@ dependencies = [
     "torch-cluster>=1.6.3",
     "pandas>=2.3.3",
     "pytest>=9.0.2",
+    "captum>=0.8.0",
 ]
 
 [project.optional-dependencies]

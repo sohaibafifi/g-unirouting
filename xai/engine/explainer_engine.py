@@ -1,4 +1,4 @@
-"""ExplainerEngine: unified step-loop for gradient and IG attribution."""
+"""ExplainerEngine: unified step-loop for attribution methods."""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from mavrp.env.models import TransformerModel
 
 from engine.attribution import AttributionBase
-from engine.ig_attribution import IGAttribution, compute_local_contrastive_feature_grads
+from engine.ig_attribution import compute_local_contrastive_feature_grads
 from engine.decode_types import DecodeState
 from engine.decode_ops import (
     build_common,
@@ -65,7 +65,7 @@ class ExplainerEngine:
         config_id: Optional index into Config.all().
         checkpoint_path: Path to the loaded checkpoint file.
         args: Parsed CLI namespace (used for num_instances, max_steps, etc.).
-        attribution: Attribution method (GradientAttribution or IGAttribution).
+        attribution: Attribution method implementation.
     """
 
     def __init__(
@@ -98,10 +98,13 @@ class ExplainerEngine:
         args = self.args
         model = self.model
         config = self.config
-        is_ig = isinstance(self.attribution, IGAttribution)
+        method_key = self.attribution.method_key()
+        uses_reference_baseline = self.attribution.uses_reference_baseline()
+        needs_local_counterfactual_grads = (
+            self.attribution.needs_local_counterfactual_grads()
+        )
 
-        if is_ig:
-            self.attribution.set_baseline(node_features, global_features)
+        self.attribution.prepare_inputs(node_features, global_features)
 
         topk_list = parse_topk_nodes(args.topk_nodes)
         selected_features = parse_attr_features(args.attr_features)
@@ -115,15 +118,17 @@ class ExplainerEngine:
             args.feasibility_cost_weight
         )
         use_feasibility_importance = recourse_enabled and feasibility_weight > 0.0
-        importance_mode = (
-            (
-                "integrated-gradients+feasibility"
-                if use_feasibility_importance
-                else "integrated-gradients"
+        if method_key == "gradient":
+            importance_mode = (
+                "decision+feasibility" if use_feasibility_importance else "decision-only"
             )
-            if is_ig
-            else ("decision+feasibility" if use_feasibility_importance else "decision-only")
-        )
+        else:
+            method_label = method_key.replace("_", "-")
+            importance_mode = (
+                f"{method_label}+feasibility"
+                if use_feasibility_importance
+                else method_label
+            )
 
         batch_size, num_nodes = node_features.shape[:2]
         max_attr_k = max(topk_list)
@@ -692,7 +697,7 @@ class ExplainerEngine:
                     )
 
                     # Counterfactual grads: local non-IG for IG, batch slice for gradient
-                    if is_ig:
+                    if needs_local_counterfactual_grads:
                         state_slice = slice_state(state, i)
                         cf_grads = compute_local_contrastive_feature_grads(
                             model=model,
@@ -838,7 +843,7 @@ class ExplainerEngine:
             trajectory_summary=trajectory_summary,
             variant_meta=variant_meta,
             topk_list=topk_list,
-            is_ig=is_ig,
+            method_key=method_key,
         )
 
         report = self._build_report(
@@ -854,7 +859,7 @@ class ExplainerEngine:
             feasibility_weight=feasibility_weight,
             feasibility_top_m=feasibility_top_m,
             feasibility_cost_weight=feasibility_cost_weight,
-            is_ig=is_ig,
+            method_key=method_key,
         )
         return report
 
@@ -864,14 +869,20 @@ class ExplainerEngine:
         output_dir.mkdir(parents=True, exist_ok=True)
         cfg = report.get("config", {})
         model_slug = str(cfg.get("model_slug", "unknown"))
-        is_ig = str(cfg.get("attribution_method", "")) == "integrated_gradients"
+        method_key = str(cfg.get("attribution_method", "gradient")).strip().lower()
         randomized = bool(cfg.get("randomize_weights", False))
         random_suffix = "_randomized" if randomized else ""
-        prefix = "action_explainer_ig_" if is_ig else "action_explainer_"
+        prefix = {
+            "integrated_gradients": "action_explainer_ig_",
+            "deeplift": "action_explainer_deeplift_",
+        }.get(method_key, "action_explainer_")
         output_path = output_dir / f"{prefix}{model_slug}{random_suffix}_{int(time.time())}.json"
         with output_path.open("w", encoding="utf-8") as handle:
             json.dump(report, handle, indent=2)
-        label = "IG XAI" if is_ig else "XAI"
+        label = {
+            "integrated_gradients": "IG XAI",
+            "deeplift": "DeepLIFT XAI",
+        }.get(method_key, "XAI")
         print(f"Saved {label} report to {output_path}")
         return output_path
 
@@ -893,7 +904,7 @@ class ExplainerEngine:
         feasibility_weight: float,
         feasibility_top_m: int,
         feasibility_cost_weight: float,
-        is_ig: bool,
+        method_key: str,
     ) -> Dict[str, Any]:
         config = self.config
         config_id = self.config_id
@@ -904,12 +915,22 @@ class ExplainerEngine:
 
         run_name = repr(config)
         run_group = f"{config.problem}/{config.graph_size}"
+        model_label_base = f"{run_group}/{run_name}"
 
-        if is_ig:
-            baseline_tag = str(getattr(args, "ig_baseline", "mean-fill"))
-            model_label_base = f"{run_group}/{run_name}"
-            model_label = f"{model_label_base} [IG:{baseline_tag}]"
-            model_slug = slugify(f"{model_label_base}-ig-{baseline_tag}")
+        if self.attribution.uses_reference_baseline():
+            baseline_tag = str(
+                getattr(
+                    args,
+                    "deeplift_baseline",
+                    getattr(args, "ig_baseline", "mean-fill"),
+                )
+            )
+            method_tag = {
+                "integrated_gradients": "IG",
+                "deeplift": "DeepLift",
+            }.get(method_key, method_key)
+            model_label = f"{model_label_base} [{method_tag}:{baseline_tag}]"
+            model_slug = slugify(f"{model_label_base}-{method_key}-{baseline_tag}")
         else:
             model_label = f"{run_group}/{run_name}"
             model_slug = slugify(model_label)
@@ -949,22 +970,20 @@ class ExplainerEngine:
             "config_repr": run_name,
         }
 
-        if is_ig:
-            config_dict["model_label_base"] = model_label
-            config_dict["model_label"] = model_label
-            config_dict["attribution_method"] = "integrated_gradients"
-            config_dict["node_importance_mode"] = importance_mode
-            config_dict["feasibility_weight"] = float(feasibility_weight)
-            config_dict["feasibility_top_m"] = int(feasibility_top_m)
-            config_dict["feasibility_cost_weight"] = float(feasibility_cost_weight)
-            config_dict["ig_steps"] = int(getattr(args, "ig_steps", 50))
-            config_dict["ig_baseline"] = baseline_tag
-        else:
-            config_dict["model_label"] = model_label
-            config_dict["node_importance_mode"] = importance_mode
-            config_dict["feasibility_weight"] = float(feasibility_weight)
-            config_dict["feasibility_top_m"] = int(feasibility_top_m)
-            config_dict["feasibility_cost_weight"] = float(feasibility_cost_weight)
+        config_dict["model_label"] = model_label
+        config_dict["attribution_method"] = method_key
+        config_dict["node_importance_mode"] = importance_mode
+        config_dict["feasibility_weight"] = float(feasibility_weight)
+        config_dict["feasibility_top_m"] = int(feasibility_top_m)
+        config_dict["feasibility_cost_weight"] = float(feasibility_cost_weight)
+        if baseline_tag is not None:
+            config_dict["model_label_base"] = model_label_base
+            config_dict["reference_baseline"] = baseline_tag
+            if method_key == "integrated_gradients":
+                config_dict["ig_steps"] = int(getattr(args, "ig_steps", 50))
+                config_dict["ig_baseline"] = baseline_tag
+            elif method_key == "deeplift":
+                config_dict["deeplift_baseline"] = baseline_tag
 
         config_dict.update(self.attribution.summary())
 
@@ -1394,7 +1413,7 @@ def _build_summary(
     trajectory_summary: Dict[str, Any],
     variant_meta: List[Dict[str, Any]],
     topk_list: List[int],
-    is_ig: bool,
+    method_key: str,
 ) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "num_instances": int(args.num_instances),
@@ -1467,8 +1486,7 @@ def _build_summary(
         },
     }
 
-    if is_ig:
-        summary["method"] = "integrated_gradients"
+    summary["method"] = method_key
 
     # Normalise shares
     feat_total = sum(summary["feature_importance_mean"].values())

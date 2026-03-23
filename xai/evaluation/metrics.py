@@ -33,11 +33,13 @@ def model_name(report: Dict[str, Any]) -> str:
 def report_method(report: Dict[str, Any]) -> str:
     cfg = report.get("data", {}).get("config", {}) or {}
     m = str(cfg.get("attribution_method", "")).strip().lower()
-    if m in {"integrated_gradients", "gradient"}:
+    if m in {"integrated_gradients", "gradient", "deeplift"}:
         return m
     label = str(cfg.get("model_label", "")).strip().lower()
     if "[ig:" in label:
         return "integrated_gradients"
+    if "[deeplift:" in label or "[deep-lift:" in label:
+        return "deeplift"
     return "gradient"
 
 
@@ -52,6 +54,9 @@ def report_seed(report: Dict[str, Any]) -> Optional[int]:
 def shared_group_key(report: Dict[str, Any]) -> Tuple[Any, ...]:
     cfg = report["data"].get("config", {})
     ckpt = str(cfg.get("checkpoint_path_resolved") or cfg.get("checkpoint_path") or "")
+    reference_baseline = str(
+        cfg.get("reference_baseline") or cfg.get("ig_baseline") or cfg.get("deeplift_baseline") or ""
+    )
     return (
         ckpt,
         int(cfg.get("num_instances", 0)),
@@ -59,7 +64,7 @@ def shared_group_key(report: Dict[str, Any]) -> Tuple[Any, ...]:
         tuple(int(v) for v in cfg.get("topk_nodes", [])),
         bool(cfg.get("randomize_weights", False)),
         str(cfg.get("node_importance_mode", "")),
-        str(cfg.get("ig_baseline", "")),
+        reference_baseline,
         float(cfg.get("feasibility_weight", 0.0)),
         int(cfg.get("feasibility_top_m", 0)),
         float(cfg.get("feasibility_cost_weight", 0.0)),

@@ -22,6 +22,23 @@ from engine.decode_types import DecodeState
 class AttributionBase:
     """Abstract base for attribution methods."""
 
+    def method_key(self) -> str:
+        raise NotImplementedError
+
+    def prepare_inputs(
+        self,
+        node_features: torch.Tensor,
+        global_features: torch.Tensor,
+    ) -> None:
+        """Optional hook to cache method-specific state before the step loop."""
+        return None
+
+    def uses_reference_baseline(self) -> bool:
+        return False
+
+    def needs_local_counterfactual_grads(self) -> bool:
+        return False
+
     def compute_step(
         self,
         model: "TransformerModel",
@@ -42,11 +59,14 @@ class AttributionBase:
 
     def summary(self) -> Dict[str, Any]:
         """Return any attribution-method-specific summary fields."""
-        return {}
+        return {"attribution_method": self.method_key()}
 
 
 class GradientAttribution(AttributionBase):
     """Vanilla gradient (saliency) attribution."""
+
+    def method_key(self) -> str:
+        return "gradient"
 
     def compute_step(
         self,
