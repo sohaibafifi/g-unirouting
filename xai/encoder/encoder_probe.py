@@ -413,13 +413,23 @@ def compute_probe_bundle(args: argparse.Namespace) -> Tuple[Dict[str, Any], Dict
             "on" if bool(meta["flags"]["time_windows"]) else "off"
         )
 
-        route_base = "linehaul"
+        family_states["route_openness_state"].append(
+            "open_route" if bool(meta["flags"]["open_route"]) else "closed_route"
+        )
+
+        flow_state = "linehaul_only"
         if bool(meta["flags"]["mixed_backhaul"]) and bool(meta["flags"]["backhaul"]):
-            route_base = "mixed_backhaul"
+            flow_state = "mixed_backhaul"
         elif bool(meta["flags"]["backhaul"]):
-            route_base = "backhaul"
-        route_prefix = "open" if bool(meta["flags"]["open_route"]) else "closed"
-        family_states["route_structure_state"].append(f"{route_prefix}_{route_base}")
+            flow_state = "backhaul"
+        family_states["flow_structure_state"].append(flow_state)
+
+    family_states["geometry_state"] = _quantile_states(
+        values=max_depot_distance,
+        active_mask=np.ones_like(max_depot_distance, dtype=bool),
+        labels=["compact_geometry", "medium_geometry", "spread_geometry"],
+        off_label="medium_geometry",
+    )
 
     family_states["capacity_demands_state"] = _quantile_states(
         values=load_ratio,
@@ -427,10 +437,10 @@ def compute_probe_bundle(args: argparse.Namespace) -> Tuple[Dict[str, Any], Dict
         labels=["load_low", "load_medium", "load_high"],
         off_label="load_low",
     )
-    family_states["space_distance_state"] = _quantile_states(
+    family_states["distance_limit_state"] = _quantile_states(
         values=distance_tightness,
         active_mask=finite_limit_mask,
-        labels=["tight_limit", "medium_limit", "loose_limit"],
+        labels=["tight_limit", "medium_limit", "large_limit"],
         off_label="no_limit",
     )
     family_states["time_windows_service_state"] = _quantile_states(
@@ -438,7 +448,7 @@ def compute_probe_bundle(args: argparse.Namespace) -> Tuple[Dict[str, Any], Dict
         active_mask=np.array(
             [bool(meta["flags"]["time_windows"]) for meta in metadata], dtype=bool
         ),
-        labels=["tight_tw", "medium_tw", "loose_tw"],
+        labels=["tight_tw", "medium_tw", "large_tw"],
         off_label="no_tw",
     )
 
@@ -489,11 +499,12 @@ def compute_probe_bundle(args: argparse.Namespace) -> Tuple[Dict[str, Any], Dict
 
     family_state_probes: Dict[str, Dict[str, Any]] = {}
     for family_name, labels in sorted(family_states.items()):
+        is_binary = len(set(labels)) == 2
         family_state_probes[family_name] = {
             "silhouette": _label_silhouette(feature_matrix, labels, seed=args.seed),
             "centroid_margin": _centroid_margin(feature_matrix, labels),
             "linear_probe": _cross_validated_probe(
-                feature_matrix, labels, seed=args.seed, binary=False
+                feature_matrix, labels, seed=args.seed, binary=is_binary
             ),
             "class_balance": dict(Counter(labels)),
         }

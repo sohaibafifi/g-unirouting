@@ -178,18 +178,28 @@ def _plot_constraint_auc_heatmaps(
     output_dir: Path,
     dpi: int,
 ) -> Path:
-    grouped_constraints = ["route_structure", "space_distance", "time_windows_service"]
+    family_state_metrics: List[Tuple[str, str]] = [
+        ("route_openness_state", "open_f1"),
+        ("flow_structure_state", "flow_f1"),
+        ("geometry_state", "geom_f1"),
+        ("capacity_demands_state", "cap_f1"),
+        ("distance_limit_state", "dist_f1"),
+        ("time_windows_service_state", "tw_f1"),
+    ]
     primitive_constraints = ["open_route", "backhaul", "mixed_backhaul", "distance_limit", "time_windows"]
     labels = _model_labels(rows)
 
-    grouped_matrix = np.full((len(labels), len(grouped_constraints)), np.nan, dtype=float)
+    family_matrix = np.full((len(labels), len(family_state_metrics)), np.nan, dtype=float)
     primitive_matrix = np.full((len(labels), len(primitive_constraints)), np.nan, dtype=float)
 
     for row_idx, row in enumerate(rows):
         report = reports_by_model[str(row["model"])]
-        for col_idx, name in enumerate(grouped_constraints):
-            grouped_matrix[row_idx, col_idx] = _num_or_nan(
-                _nested_get(report, ["constraint_group_separation", name, "linear_probe", "roc_auc"])
+        for col_idx, (name, _) in enumerate(family_state_metrics):
+            family_matrix[row_idx, col_idx] = _num_or_nan(
+                _nested_get(
+                    report,
+                    ["constraint_family_state_separation", name, "linear_probe", "macro_f1"],
+                )
             )
         for col_idx, name in enumerate(primitive_constraints):
             primitive_matrix[row_idx, col_idx] = _num_or_nan(
@@ -199,10 +209,15 @@ def _plot_constraint_auc_heatmaps(
     fig, axes = plt.subplots(2, 1, figsize=(10, max(4.5, 1.1 * len(labels) + 2)), constrained_layout=True)
     cmap = plt.cm.YlGnBu
     for ax, matrix, columns, title in [
-        (axes[0], grouped_matrix, grouped_constraints, "Constraint Group ROC AUC"),
+        (
+            axes[0],
+            family_matrix,
+            [label for _, label in family_state_metrics],
+            "Structural Family Macro-F1",
+        ),
         (axes[1], primitive_matrix, primitive_constraints, "Primitive Constraint ROC AUC"),
     ]:
-        im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=0.5, vmax=1.0)
+        im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=0.0, vmax=1.0)
         ax.set_title(title)
         ax.set_yticks(np.arange(len(labels)))
         ax.set_yticklabels(labels)
@@ -451,6 +466,21 @@ def _project_features(features: np.ndarray, method: str) -> np.ndarray:
     raise ValueError(f"Unsupported projection method: {method}")
 
 
+def _family_class_order(family_key: str, classes: Sequence[str]) -> List[str]:
+    preferred = {
+        "route_openness_state": ["closed_route", "open_route"],
+        "flow_structure_state": ["linehaul_only", "backhaul", "mixed_backhaul"],
+        "geometry_state": ["compact_geometry", "medium_geometry", "spread_geometry"],
+        "capacity_demands_state": ["load_low", "load_medium", "load_high"],
+        "distance_limit_state": ["no_limit", "tight_limit", "medium_limit", "large_limit"],
+        "time_windows_service_state": ["no_tw", "tight_tw", "medium_tw", "large_tw"],
+    }
+    order = preferred.get(family_key, [])
+    ordered = [label for label in order if label in classes]
+    ordered.extend(sorted(label for label in classes if label not in ordered))
+    return ordered
+
+
 def _plot_constraint_projections(
     rows: Sequence[Dict[str, Any]],
     reports_by_model: Dict[str, Dict[str, Any]],
@@ -459,10 +489,12 @@ def _plot_constraint_projections(
     method: str,
 ) -> Path:
     families = [
-        ("route_structure_state", "route structure"),
+        ("route_openness_state", "route openness"),
+        ("flow_structure_state", "flow structure"),
+        ("geometry_state", "geometry"),
         ("capacity_demands_state", "capacity / demands"),
-        ("space_distance_state", "space / distance"),
-        ("time_windows_service_state", "time windows / service"),
+        ("distance_limit_state", "distance limit"),
+        ("time_windows_service_state", "time windows"),
     ]
     nrows = len(rows)
     fig, axes = plt.subplots(
@@ -483,7 +515,7 @@ def _plot_constraint_projections(
         for col_idx, (family_key, family_title) in enumerate(families):
             ax = axes[row_idx, col_idx]
             labels = family_states[family_key]
-            classes = sorted(set(labels.tolist()))
+            classes = _family_class_order(family_key, sorted(set(labels.tolist())))
             cmap = plt.get_cmap("tab10", max(len(classes), 3))
             for class_idx, class_name in enumerate(classes):
                 mask = labels == class_name
@@ -504,7 +536,10 @@ def _plot_constraint_projections(
             ax.set_yticks([])
             ax.grid(alpha=0.12)
 
-    fig.suptitle(f"{method.upper()} projections colored by faithful constraint-family states", fontsize=14)
+    fig.suptitle(
+        f"{method.upper()} projections colored by faithful structural constraint states",
+        fontsize=14,
+    )
 
     path = output_dir / f"constraint_projections_{method}.png"
     fig.savefig(path, dpi=dpi, bbox_inches="tight")

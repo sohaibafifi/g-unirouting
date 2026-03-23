@@ -43,6 +43,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "signature_nmi",
             "signature_ari",
             "signature_macro_f1",
+            "route_openness_f1",
+            "flow_structure_f1",
+            "geometry_f1",
+            "capacity_demands_f1",
+            "distance_limit_state_f1",
+            "time_windows_state_f1",
             "route_structure_auc",
             "time_windows_auc",
             "distance_limit_auc",
@@ -112,6 +118,30 @@ def _summary_row(config_id: int, report: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "signature_ari": _nested_get(
             report, ["constraint_signature_separation", "kmeans_aligned", "adjusted_rand"]
+        ),
+        "route_openness_f1": _nested_get(
+            report,
+            ["constraint_family_state_separation", "route_openness_state", "linear_probe", "macro_f1"],
+        ),
+        "flow_structure_f1": _nested_get(
+            report,
+            ["constraint_family_state_separation", "flow_structure_state", "linear_probe", "macro_f1"],
+        ),
+        "geometry_f1": _nested_get(
+            report,
+            ["constraint_family_state_separation", "geometry_state", "linear_probe", "macro_f1"],
+        ),
+        "capacity_demands_f1": _nested_get(
+            report,
+            ["constraint_family_state_separation", "capacity_demands_state", "linear_probe", "macro_f1"],
+        ),
+        "distance_limit_state_f1": _nested_get(
+            report,
+            ["constraint_family_state_separation", "distance_limit_state", "linear_probe", "macro_f1"],
+        ),
+        "time_windows_state_f1": _nested_get(
+            report,
+            ["constraint_family_state_separation", "time_windows_service_state", "linear_probe", "macro_f1"],
         ),
         "route_structure_auc": _nested_get(
             report, ["constraint_group_separation", "route_structure", "linear_probe", "roc_auc"]
@@ -225,24 +255,36 @@ def _render_interpretation(rows: List[Dict[str, Any]]) -> List[str]:
             "This means the best naturally organized latent space is not necessarily the one whose signatures are easiest to decode with supervision."
         )
 
-    tw_spread = _metric_spread(rows, "time_windows_auc")
-    route_spread = _metric_spread(rows, "route_structure_auc")
-    dist_spread = _metric_spread(rows, "distance_limit_auc")
+    tw_spread = _metric_spread(rows, "time_windows_state_f1")
+    open_spread = _metric_spread(rows, "route_openness_f1")
+    flow_spread = _metric_spread(rows, "flow_structure_f1")
+    dist_spread = _metric_spread(rows, "distance_limit_state_f1")
+    geom_spread = _metric_spread(rows, "geometry_f1")
 
     if tw_spread is not None and tw_spread < 0.01:
         lines.append(
-            "- `tw_auc` is almost constant across configs. "
-            "Time-window information is therefore not very discriminative for ranking the methods in this experiment."
+            "- `tw_f1` is almost constant across configs. "
+            "Time-window structural states are therefore not very discriminative for ranking the methods in this experiment."
         )
-    if route_spread is not None and route_spread < 0.01:
+    if open_spread is not None and open_spread < 0.01:
         lines.append(
-            "- `route_auc` is almost constant across configs. "
-            "Route-structure information is present in nearly all models and is not the main differentiator here."
+            "- `open_f1` is almost constant across configs. "
+            "Route-openness states are present in nearly all models and are not the main differentiator here."
+        )
+    if flow_spread is not None and flow_spread < 0.01:
+        lines.append(
+            "- `flow_f1` is almost constant across configs. "
+            "Flow-structure states are similarly recoverable across models, so they are not the main differentiator here."
         )
     if dist_spread is not None and dist_spread < 0.01:
         lines.append(
-            "- `dist_auc` is almost constant across configs. "
-            "Distance-limit information is easy to recover in all models, so it should not drive the ranking by itself."
+            "- `dist_f1` is almost constant across configs. "
+            "Distance-limit states are easy to recover in all models, so they should not drive the ranking by themselves."
+        )
+    if geom_spread is not None and geom_spread < 0.01:
+        lines.append(
+            "- `geom_f1` is almost constant across configs. "
+            "The coarse geometry states are similarly decodable across models and are not a strong discriminator here."
         )
 
     lines.extend(
@@ -331,7 +373,7 @@ def _render_console_table(rows: List[Dict[str, Any]], sort_by: str) -> None:
     table.add_column("id", justify="right", style="bold")
     table.add_column("model", overflow="fold", ratio=3)
     table.add_column("signature", overflow="fold", ratio=2)
-    table.add_column("flags", overflow="fold", ratio=2)
+    table.add_column("families", overflow="fold", ratio=2)
     table.add_column("richness", overflow="fold", ratio=2)
     table.add_column("clusters", overflow="fold", ratio=2)
 
@@ -345,9 +387,12 @@ def _render_console_table(rows: List[Dict[str, Any]], sort_by: str) -> None:
         )
         flags_cell = "\n".join(
             [
-                f"route={_fmt(row['route_structure_auc'])}",
-                f"tw={_fmt(row['time_windows_auc'])}",
-                f"dist={_fmt(row['distance_limit_auc'])}",
+                f"open={_fmt(row['route_openness_f1'])}",
+                f"flow={_fmt(row['flow_structure_f1'])}",
+                f"geom={_fmt(row['geometry_f1'])}",
+                f"cap={_fmt(row['capacity_demands_f1'])}",
+                f"dist={_fmt(row['distance_limit_state_f1'])}",
+                f"tw={_fmt(row['time_windows_state_f1'])}",
             ]
         )
         richness_cell = "\n".join(
@@ -383,8 +428,8 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
         f"- pooling: `{args.pooling}`",
         f"- max_k: `{args.max_k}`",
         "",
-        "| id | model | sig_f1 | sig_nmi | sig_ari | route_auc | tw_auc | dist_auc | eff_rank | stable_rank | best_k | best_sil |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| id | model | sig_f1 | sig_nmi | sig_ari | open_f1 | flow_f1 | geom_f1 | cap_f1 | dist_f1 | tw_f1 | eff_rank | stable_rank | best_k | best_sil |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
@@ -396,9 +441,12 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
                     _fmt(row["signature_macro_f1"]),
                     _fmt(row["signature_nmi"]),
                     _fmt(row["signature_ari"]),
-                    _fmt(row["route_structure_auc"]),
-                    _fmt(row["time_windows_auc"]),
-                    _fmt(row["distance_limit_auc"]),
+                    _fmt(row["route_openness_f1"]),
+                    _fmt(row["flow_structure_f1"]),
+                    _fmt(row["geometry_f1"]),
+                    _fmt(row["capacity_demands_f1"]),
+                    _fmt(row["distance_limit_state_f1"]),
+                    _fmt(row["time_windows_state_f1"]),
                     _fmt(row["effective_rank_mean"]),
                     _fmt(row["stable_rank_mean"]),
                     _fmt(row["best_k"], ndigits=0),
@@ -416,9 +464,13 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
             "- `sig_f1`: macro-F1 of a linear probe trained to predict the full constraint signature from the latent representation. Higher is better. A high value means the combinations of active constraints are easy to decode with a simple supervised model. If it is low, the information may be entangled, incomplete, or too imbalanced across signatures.",
             "- `sig_nmi`: normalized mutual information between unsupervised `k-means` clusters and true constraint signatures. Higher is better. `0` means almost no alignment, `1` means perfect alignment. This is a good metric for asking whether the latent space naturally organizes itself by constraint combinations.",
             "- `sig_ari`: adjusted Rand index between `k-means` clusters and true constraint signatures. Higher is better. `0` is close to chance, `1` is perfect, and negative values mean worse than chance. It is stricter than NMI and more sensitive to over-fragmented clusterings.",
-            "- `route_auc`: ROC AUC of a linear probe predicting the grouped `route_structure` signal from the latent representation. Higher is better. `0.5` is random guessing, values near `1.0` mean the representation separates route-structure-related constraints very clearly.",
-            "- `tw_auc`: ROC AUC of a linear probe predicting the `time_windows` signal. Higher is better. `0.5` is random, `1.0` is perfect separation. If all models are at `1.0`, this constraint is probably too easy to discriminate and is not useful for ranking encoders.",
-            "- `dist_auc`: ROC AUC of a linear probe predicting the `distance_limit` signal. Higher is better. `0.5` is random, values close to `1.0` mean the distance-limit constraint is explicitly present and easy to recover from the latent space.",
+            "- `open_f1`: macro-F1 of a linear probe predicting the structural `route_openness_state` (`open_route` vs `closed_route`). Higher is better. A high value means the encoder cleanly separates open-route and closed-route instances.",
+            "- `flow_f1`: macro-F1 of a linear probe predicting the structural `flow_structure_state` (`linehaul_only`, `backhaul`, `mixed_backhaul`). Higher is better. A high value means the encoder preserves the difference between these flow regimes.",
+            "- `geom_f1`: macro-F1 of a linear probe predicting the coarse `geometry_state` (`compact`, `medium`, `spread`). Higher is better. It tells you whether the encoder keeps a readable notion of the static spatial scale of the instance.",
+            "- `cap_f1`: macro-F1 of a linear probe predicting the `capacity_demands_state` (`load_low`, `load_medium`, `load_high`). Higher is better. It measures whether the encoder preserves a readable summary of demand pressure relative to capacity.",
+            "- `dist_f1`: macro-F1 of a linear probe predicting the structural `distance_limit_state` (`no_limit`, `tight_limit`, `medium_limit`, `large_limit`). Higher is better. It is more faithful than a simple `on/off` metric because it distinguishes the severity of the limit.",
+            "- `tw_f1`: macro-F1 of a linear probe predicting the structural `time_windows_service_state` (`no_tw`, `tight_tw`, `medium_tw`, `large_tw`). Higher is better. It is more faithful than a simple `on/off` metric because it distinguishes coarse temporal regimes.",
+            "- `tw_auc` and `dist_auc`: primitive binary ROC AUC diagnostics for `time_windows` and `distance_limit`. Higher is better. They remain useful as secondary checks, but the family-state metrics above are the main aligned metrics.",
             "- `eff_rank`: effective rank of the output representation matrix. Higher usually means a richer latent space that uses more directions instead of collapsing to a small subspace. This is not a quality metric by itself: a high value is only useful if separation metrics are also good.",
             "- `stable_rank`: stable-rank-style compact richness measure. Higher usually means the latent representation is less dominated by only a few singular directions. Like `eff_rank`, it should be interpreted jointly with separation metrics rather than alone.",
             "- `best_k`: value of `k` that maximizes silhouette in the `k-means` sweep. This is descriptive, not a target to maximize by itself. A larger `best_k` does not automatically mean a better encoder; it may also reflect fragmentation.",
@@ -428,7 +480,8 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
             "",
             "- To compare natural organization by constraints, prioritize `sig_nmi` and `sig_ari`.",
             "- To compare how easy it is to decode constraint combinations with supervision, prioritize `sig_f1`.",
-            "- To compare whether specific binary constraints are explicitly encoded, use `route_auc`, `tw_auc`, and `dist_auc`.",
+            "- To compare whether the faithful structural families are explicitly encoded, use `open_f1`, `flow_f1`, `geom_f1`, `cap_f1`, `dist_f1`, and `tw_f1`.",
+            "- Use `tw_auc` and `dist_auc` only as secondary binary diagnostics. They are easier tasks and therefore less discriminative than the aligned family-state metrics.",
             "- To study representation richness, use `eff_rank` and `stable_rank`, but only together with the separation metrics.",
             "- Do not rank encoders with `best_k` or `best_sil` alone. They are useful diagnostics for cluster geometry, not sufficient evidence that the latent space distinguishes the right constraints.",
             "",
@@ -436,8 +489,9 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
             "",
             "- High `sig_nmi` and high `sig_ari`: the encoder naturally clusters instances according to the true active constraint combinations.",
             "- High `sig_f1` but lower `sig_nmi`/`sig_ari`: the information is present and decodable, but not cleanly organized into natural clusters.",
+            "- High `open_f1`, `flow_f1`, `dist_f1`, or `tw_f1`: the encoder preserves the faithful structural taxonomy, not only the old coarse groups.",
             "- High `eff_rank` with weak separation metrics: the latent space is rich, but that richness is not specifically structured by constraints.",
-            "- Very high `tw_auc` or `route_auc` for every model: these constraints are probably easy and not very discriminative for comparing encoders.",
+            "- Very high `tw_auc` or `dist_auc` for every model: these primitive binary constraints are probably too easy and not very discriminative for comparing encoders.",
             "- Strong `best_sil` with weak `sig_nmi`/`sig_ari`: the model forms compact clusters, but they do not correspond well to the real constraint structure.",
         ]
     )
@@ -487,8 +541,10 @@ def main() -> None:
         rows.append(row)
         console.print(
             f"[cyan]done[/cyan] config={config_id} model={config_repr} "
-            f"nmi={_fmt(row['signature_nmi'])} eff_rank={_fmt(row['effective_rank_mean'])}"
-            f"dist_auc={_fmt(row['distance_limit_auc'])} tw_auc={_fmt(row['time_windows_auc'])}"
+            f"nmi={_fmt(row['signature_nmi'])} "
+            f"eff_rank={_fmt(row['effective_rank_mean'])} "
+            f"dist_f1={_fmt(row['distance_limit_state_f1'])} "
+            f"tw_f1={_fmt(row['time_windows_state_f1'])}"
         )
 
     rows = sorted(rows, key=lambda row: _sort_key(row, args.sort_by), reverse=True)
