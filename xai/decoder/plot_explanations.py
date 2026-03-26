@@ -1289,7 +1289,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-dir",
-        default="logs/xai/figures",
+        default="logs/xai/decoder/figures",
         help="Directory to save generated PNG figures",
     )
     parser.add_argument(

@@ -268,9 +268,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--report", action="append", default=None,
         help="Explicit action_explainer JSON path. Can be passed multiple times.",
     )
-    parser.add_argument("--pattern", default="logs/xai/action_explainer_*.json")
+    parser.add_argument("--pattern", default="logs/xai/decoder/reports/action_explainer_*.json")
     parser.add_argument("--latest", type=int, default=10)
-    parser.add_argument("--output-dir", default="logs/xai/sanity")
+    parser.add_argument("--output-dir", default="logs/xai/decoder/sanity/reports")
     parser.add_argument("--output-csv", default=None)
     parser.add_argument("--table-layout", choices=["auto", "compact", "wide"], default="auto")
     parser.add_argument("--dry-run", action="store_true")

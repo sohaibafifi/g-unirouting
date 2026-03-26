@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--data-seed", type=int, default=None)
-    parser.add_argument("--output-dir", default="logs/xai")
+    parser.add_argument("--output-dir", default="logs/xai/decoder/reports")
     parser.add_argument("--max-instances-to-store", type=int, default=8)
     parser.add_argument(
         "--save-step-records", action=argparse.BooleanOptionalAction, default=True

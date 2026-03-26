@@ -102,7 +102,7 @@ def main() -> None:
         description="Summarize action_explainer JSON reports"
     )
     parser.add_argument(
-        "--pattern", default="logs/xai/action_explainer_*.json"
+        "--pattern", default="logs/xai/decoder/reports/action_explainer_*.json"
     )
     parser.add_argument("--latest", type=int, default=None)
     parser.add_argument(

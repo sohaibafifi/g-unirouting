@@ -27,7 +27,7 @@ def main() -> None:
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--samples-per-variant", type=int, default=100)
-    parser.add_argument("--output", default="logs/xai/tsne_encoder.png")
+    parser.add_argument("--output", default="logs/xai/encoder/tsne/tsne_encoder.png")
     parser.add_argument("--seed", type=int, default=1234)
     args = parser.parse_args()
 

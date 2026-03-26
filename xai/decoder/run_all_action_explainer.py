@@ -324,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run xai/action_explainer.py for all g-unirouting checkpoints."
     )
     parser.add_argument("--project-root", default=".")
-    parser.add_argument("--output-dir", default="logs/xai")
+    parser.add_argument("--output-dir", default="logs/xai/decoder/reports")
     parser.add_argument("--checkpoints-glob", default="output/*/*/*/baseline.pt")
     parser.add_argument("--python-bin", default=".venv/bin/python" if sys.platform != "win32" else ".venv\\Scripts\\python.exe")
     parser.add_argument("--num-instances", type=int, default=128)

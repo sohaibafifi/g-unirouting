@@ -49,7 +49,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate explanation quality and stability across action_explainer reports."
     )
-    parser.add_argument("--pattern", default="logs/xai/action_explainer_*.json")
+    parser.add_argument("--pattern", default="logs/xai/decoder/reports/action_explainer_*.json")
     parser.add_argument(
         "--method-filter",
         choices=["all", "gradient", "integrated_gradients", "deeplift"],

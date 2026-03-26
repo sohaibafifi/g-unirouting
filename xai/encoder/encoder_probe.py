@@ -332,7 +332,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-k", type=int, default=12)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--output", default="logs/xai/encoder_probe.json")
+    parser.add_argument("--output", default="logs/xai/encoder/constraints/probe.json")
     parser.add_argument("--artifacts-output", default=None)
     return parser
 

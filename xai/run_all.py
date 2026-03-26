@@ -158,7 +158,7 @@ def _discover_decoder_sources(output_dir: Path, source_mode: str) -> List[Path]:
     return bundles if bundles else reports
 
 
-def _encoder_flow(
+def _encoder_constraint_flow(
     args: argparse.Namespace,
     project_root: Path,
     env: Dict[str, str],
@@ -207,6 +207,236 @@ def _encoder_flow(
         "plot_dir": str(plot_dir),
         "projection_methods": list(args.encoder_projection_methods),
     }
+
+
+def _encoder_graph_concept_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    comparison_json = _resolve_path(project_root, args.encoder_concept_output_json)
+    comparison_md = _resolve_path(project_root, args.encoder_concept_output_md)
+    per_config_dir = _resolve_path(project_root, args.encoder_concept_per_config_dir)
+    plot_dir = _resolve_path(project_root, args.encoder_concept_plot_dir)
+
+    compare_cmd = [
+        args.python_bin,
+        "xai/compare_concept_probes.py",
+        f"--num-samples={args.encoder_concept_num_samples}",
+        f"--pooling={args.encoder_concept_pooling}",
+        f"--max-k={args.encoder_concept_max_k}",
+        f"--seed={args.encoder_concept_seed}",
+        f"--sort-by={args.encoder_concept_sort_by}",
+        f"--output-json={comparison_json}",
+        f"--output-md={comparison_md}",
+        f"--per-config-dir={per_config_dir}",
+    ]
+    _append_list_arg(compare_cmd, "--config-ids", args.encoder_config_ids)
+    _append_arg(compare_cmd, "--device", args.encoder_device)
+    _append_arg(compare_cmd, "--graph-size", args.encoder_graph_size)
+    _append_arg(compare_cmd, "--problem", args.encoder_problem)
+    _run(compare_cmd, project_root, env, args.dry_run, executed)
+
+    if not args.skip_encoder_plots:
+        plot_cmd = [
+            args.python_bin,
+            "xai/plot_concept_probes.py",
+            f"--input-json={comparison_json}",
+            f"--output-dir={plot_dir}",
+            f"--dpi={args.encoder_plot_dpi}",
+        ]
+        if args.encoder_projection_methods:
+            plot_cmd.append("--projection-methods")
+            plot_cmd.extend(args.encoder_projection_methods)
+        _run(plot_cmd, project_root, env, args.dry_run, executed)
+
+    return {
+        "comparison_json": str(comparison_json),
+        "comparison_md": str(comparison_md),
+        "per_config_dir": str(per_config_dir),
+        "plot_dir": str(plot_dir),
+        "projection_methods": list(args.encoder_projection_methods),
+    }
+
+
+def _encoder_discovered_direction_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    comparison_json = _resolve_path(project_root, args.encoder_discovered_output_json)
+    comparison_md = _resolve_path(project_root, args.encoder_discovered_output_md)
+    per_config_dir = _resolve_path(project_root, args.encoder_discovered_per_config_dir)
+    plot_dir = _resolve_path(project_root, args.encoder_discovered_plot_dir)
+
+    compare_cmd = [
+        args.python_bin,
+        "xai/compare_discovered_directions.py",
+        f"--num-samples={args.encoder_discovered_num_samples}",
+        f"--pooling={args.encoder_discovered_pooling}",
+        f"--seed={args.encoder_discovered_seed}",
+        f"--num-components={args.encoder_discovered_num_components}",
+        f"--top-components={args.encoder_discovered_top_components}",
+        f"--sort-by={args.encoder_discovered_sort_by}",
+        f"--output-json={comparison_json}",
+        f"--output-md={comparison_md}",
+        f"--per-config-dir={per_config_dir}",
+    ]
+    _append_list_arg(compare_cmd, "--config-ids", args.encoder_config_ids)
+    _append_arg(compare_cmd, "--device", args.encoder_device)
+    _append_arg(compare_cmd, "--graph-size", args.encoder_graph_size)
+    _append_arg(compare_cmd, "--problem", args.encoder_problem)
+    _run(compare_cmd, project_root, env, args.dry_run, executed)
+
+    if not args.skip_encoder_plots:
+        plot_cmd = [
+            args.python_bin,
+            "xai/plot_discovered_directions.py",
+            f"--input-json={comparison_json}",
+            f"--output-dir={plot_dir}",
+            f"--dpi={args.encoder_plot_dpi}",
+            f"--top-components={args.encoder_discovered_top_components}",
+        ]
+        _run(plot_cmd, project_root, env, args.dry_run, executed)
+
+    return {
+        "comparison_json": str(comparison_json),
+        "comparison_md": str(comparison_md),
+        "per_config_dir": str(per_config_dir),
+        "plot_dir": str(plot_dir),
+        "num_components": int(args.encoder_discovered_num_components),
+        "top_components": int(args.encoder_discovered_top_components),
+    }
+
+
+def _encoder_node_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    comparison_json = _resolve_path(project_root, args.encoder_node_output_json)
+    comparison_md = _resolve_path(project_root, args.encoder_node_output_md)
+    per_config_dir = _resolve_path(project_root, args.encoder_node_per_config_dir)
+    plot_dir = _resolve_path(project_root, args.encoder_node_plot_dir)
+
+    compare_cmd = [
+        args.python_bin,
+        "xai/compare_node_probes.py",
+        f"--num-samples={args.encoder_node_num_samples}",
+        f"--decode-mode={args.encoder_node_decode_mode}",
+        f"--inference-batch-size={args.encoder_node_inference_batch_size}",
+        f"--max-probe-nodes={args.encoder_node_max_probe_nodes}",
+        f"--max-k={args.encoder_node_max_k}",
+        f"--seed={args.encoder_node_seed}",
+        f"--sort-by={args.encoder_node_sort_by}",
+        f"--output-json={comparison_json}",
+        f"--output-md={comparison_md}",
+        f"--per-config-dir={per_config_dir}",
+    ]
+    _append_list_arg(compare_cmd, "--config-ids", args.encoder_config_ids)
+    _append_arg(compare_cmd, "--device", args.encoder_device)
+    _append_arg(compare_cmd, "--graph-size", args.encoder_graph_size)
+    _append_arg(compare_cmd, "--problem", args.encoder_problem)
+    _run(compare_cmd, project_root, env, args.dry_run, executed)
+
+    if not args.skip_encoder_plots:
+        plot_cmd = [
+            args.python_bin,
+            "xai/plot_node_probes.py",
+            f"--input-json={comparison_json}",
+            f"--output-dir={plot_dir}",
+            f"--dpi={args.encoder_plot_dpi}",
+        ]
+        if args.encoder_projection_methods:
+            plot_cmd.append("--projection-methods")
+            plot_cmd.extend(args.encoder_projection_methods)
+        _run(plot_cmd, project_root, env, args.dry_run, executed)
+
+    return {
+        "comparison_json": str(comparison_json),
+        "comparison_md": str(comparison_md),
+        "per_config_dir": str(per_config_dir),
+        "plot_dir": str(plot_dir),
+        "projection_methods": list(args.encoder_projection_methods),
+    }
+
+
+def _encoder_edge_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    comparison_json = _resolve_path(project_root, args.encoder_edge_output_json)
+    comparison_md = _resolve_path(project_root, args.encoder_edge_output_md)
+    per_config_dir = _resolve_path(project_root, args.encoder_edge_per_config_dir)
+    plot_dir = _resolve_path(project_root, args.encoder_edge_plot_dir)
+
+    compare_cmd = [
+        args.python_bin,
+        "xai/compare_edge_probes.py",
+        f"--num-samples={args.encoder_edge_num_samples}",
+        f"--decode-mode={args.encoder_edge_decode_mode}",
+        f"--inference-batch-size={args.encoder_edge_inference_batch_size}",
+        f"--max-probe-edges={args.encoder_edge_max_probe_edges}",
+        f"--max-k={args.encoder_edge_max_k}",
+        f"--seed={args.encoder_edge_seed}",
+        f"--sort-by={args.encoder_edge_sort_by}",
+        f"--output-json={comparison_json}",
+        f"--output-md={comparison_md}",
+        f"--per-config-dir={per_config_dir}",
+    ]
+    _append_list_arg(compare_cmd, "--config-ids", args.encoder_config_ids)
+    _append_arg(compare_cmd, "--device", args.encoder_device)
+    _append_arg(compare_cmd, "--graph-size", args.encoder_graph_size)
+    _append_arg(compare_cmd, "--problem", args.encoder_problem)
+    _run(compare_cmd, project_root, env, args.dry_run, executed)
+
+    if not args.skip_encoder_plots:
+        plot_cmd = [
+            args.python_bin,
+            "xai/plot_edge_probes.py",
+            f"--input-json={comparison_json}",
+            f"--output-dir={plot_dir}",
+            f"--dpi={args.encoder_plot_dpi}",
+        ]
+        if args.encoder_projection_methods:
+            plot_cmd.append("--projection-methods")
+            plot_cmd.extend(args.encoder_projection_methods)
+        _run(plot_cmd, project_root, env, args.dry_run, executed)
+
+    return {
+        "comparison_json": str(comparison_json),
+        "comparison_md": str(comparison_md),
+        "per_config_dir": str(per_config_dir),
+        "plot_dir": str(plot_dir),
+        "projection_methods": list(args.encoder_projection_methods),
+    }
+
+
+def _encoder_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    manifest: Dict[str, Any] = {}
+    if not args.skip_encoder_constraints:
+        manifest["constraints"] = _encoder_constraint_flow(args, project_root, env, executed)
+    if not args.skip_encoder_graph_concepts:
+        manifest["graph_concepts"] = _encoder_graph_concept_flow(args, project_root, env, executed)
+    if not args.skip_encoder_discovered_directions:
+        manifest["discovered_directions"] = _encoder_discovered_direction_flow(
+            args, project_root, env, executed
+        )
+    if not args.skip_encoder_node_probes:
+        manifest["node_probes"] = _encoder_node_flow(args, project_root, env, executed)
+    if not args.skip_encoder_edge_probes:
+        manifest["edge_probes"] = _encoder_edge_flow(args, project_root, env, executed)
+    return manifest
 
 
 def _decoder_batch_flow(
@@ -262,7 +492,7 @@ def _decoder_compare_ig_deeplift_flow(
     compare_root = (
         _resolve_path(project_root, args.decoder_compare_output_dir)
         if args.decoder_compare_output_dir is not None
-        else (output_dir / "ig_vs_deeplift").resolve()
+        else (output_dir.parent / "comparisons" / "ig_vs_deeplift").resolve()
     )
     if args.dry_run:
         print(f"Dry-run: would generate IG/DeepLIFT comparisons under {compare_root}")
@@ -463,12 +693,12 @@ def _decoder_postprocess_flow(
     text_root = (
         _resolve_path(project_root, args.decoder_text_dir)
         if args.decoder_text_dir is not None
-        else (output_dir / "text").resolve()
+        else (output_dir.parent / "text").resolve()
     )
     plot_root = (
         _resolve_path(project_root, args.decoder_plot_dir)
         if args.decoder_plot_dir is not None
-        else (output_dir / "plots").resolve()
+        else (output_dir.parent / "plots").resolve()
     )
 
     processed: List[Dict[str, str]] = []
@@ -536,10 +766,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--python-bin", default=sys.executable)
-    parser.add_argument("--manifest", default="logs/xai/run_all_manifest.json")
+    parser.add_argument("--manifest", default="logs/xai/manifests/run_all_manifest.json")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-encoder", action="store_true")
     parser.add_argument("--skip-encoder-plots", action="store_true")
+    parser.add_argument("--skip-encoder-constraints", action="store_true")
+    parser.add_argument("--skip-encoder-graph-concepts", action="store_true")
+    parser.add_argument("--skip-encoder-discovered-directions", action="store_true")
+    parser.add_argument("--skip-encoder-node-probes", action="store_true")
+    parser.add_argument("--skip-encoder-edge-probes", action="store_true")
     parser.add_argument("--skip-decoder-run", action="store_true")
     parser.add_argument("--skip-decoder-text", action="store_true")
     parser.add_argument("--skip-decoder-plots", action="store_true")
@@ -571,10 +806,22 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         default="signature_nmi",
     )
-    parser.add_argument("--encoder-output-json", default="logs/xai/encoder_probe_comparison.json")
-    parser.add_argument("--encoder-output-md", default="logs/xai/encoder_probe_comparison.md")
-    parser.add_argument("--encoder-per-config-dir", default="logs/xai/encoder_probe_runs")
-    parser.add_argument("--encoder-plot-dir", default="logs/xai/encoder_probe_plots")
+    parser.add_argument(
+        "--encoder-output-json",
+        default="logs/xai/encoder/constraints/comparison.json",
+    )
+    parser.add_argument(
+        "--encoder-output-md",
+        default="logs/xai/encoder/constraints/comparison.md",
+    )
+    parser.add_argument(
+        "--encoder-per-config-dir",
+        default="logs/xai/encoder/constraints/runs",
+    )
+    parser.add_argument(
+        "--encoder-plot-dir",
+        default="logs/xai/encoder/constraints/plots",
+    )
     parser.add_argument(
         "--encoder-projection-methods",
         nargs="*",
@@ -583,7 +830,172 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--encoder-plot-dpi", type=int, default=180)
 
-    parser.add_argument("--decoder-output-dir", default="logs/xai")
+    parser.add_argument("--encoder-concept-num-samples", type=int, default=1024)
+    parser.add_argument(
+        "--encoder-concept-pooling",
+        choices=["mean", "meanstd", "depot_meanstd"],
+        default="meanstd",
+    )
+    parser.add_argument("--encoder-concept-max-k", type=int, default=12)
+    parser.add_argument("--encoder-concept-seed", type=int, default=1234)
+    parser.add_argument(
+        "--encoder-concept-sort-by",
+        choices=[
+            "concept_signature_nmi",
+            "concept_signature_ari",
+            "concept_signature_macro_f1",
+            "concept_macro_f1_mean",
+            "compactness_f1",
+            "clustering_f1",
+            "outlier_f1",
+            "outlier_auc",
+            "load_concentration_f1",
+            "lhbh_balance_f1",
+            "capacity_prior_f1",
+            "tw_density_f1",
+            "tw_width_f1",
+            "distance_budget_f1",
+            "combined_tension_f1",
+            "effective_rank_mean",
+            "best_silhouette",
+        ],
+        default="concept_signature_nmi",
+    )
+    parser.add_argument(
+        "--encoder-concept-output-json",
+        default="logs/xai/encoder/graph_concepts/comparison.json",
+    )
+    parser.add_argument(
+        "--encoder-concept-output-md",
+        default="logs/xai/encoder/graph_concepts/comparison.md",
+    )
+    parser.add_argument(
+        "--encoder-concept-per-config-dir",
+        default="logs/xai/encoder/graph_concepts/runs",
+    )
+    parser.add_argument(
+        "--encoder-concept-plot-dir",
+        default="logs/xai/encoder/graph_concepts/plots",
+    )
+
+    parser.add_argument("--encoder-discovered-num-samples", type=int, default=1024)
+    parser.add_argument(
+        "--encoder-discovered-pooling",
+        choices=["mean", "meanstd", "depot_meanstd"],
+        default="meanstd",
+    )
+    parser.add_argument("--encoder-discovered-seed", type=int, default=1234)
+    parser.add_argument("--encoder-discovered-num-components", type=int, default=8)
+    parser.add_argument("--encoder-discovered-top-components", type=int, default=5)
+    parser.add_argument(
+        "--encoder-discovered-sort-by",
+        choices=[
+            "mean_best_abs_correlation_top_components",
+            "best_abs_correlation_overall",
+            "num_components_abs_correlation_ge_0_5",
+            "top3_cumulative_explained_variance_ratio",
+            "effective_rank_mean",
+            "distance_budget_best_abs_correlation",
+            "combined_tension_best_abs_correlation",
+        ],
+        default="mean_best_abs_correlation_top_components",
+    )
+    parser.add_argument(
+        "--encoder-discovered-output-json",
+        default="logs/xai/encoder/discovered_directions/comparison.json",
+    )
+    parser.add_argument(
+        "--encoder-discovered-output-md",
+        default="logs/xai/encoder/discovered_directions/comparison.md",
+    )
+    parser.add_argument(
+        "--encoder-discovered-per-config-dir",
+        default="logs/xai/encoder/discovered_directions/runs",
+    )
+    parser.add_argument(
+        "--encoder-discovered-plot-dir",
+        default="logs/xai/encoder/discovered_directions/plots",
+    )
+
+    parser.add_argument("--encoder-node-num-samples", type=int, default=256)
+    parser.add_argument("--encoder-node-decode-mode", choices=["greedy", "sample"], default="greedy")
+    parser.add_argument("--encoder-node-inference-batch-size", type=int, default=64)
+    parser.add_argument("--encoder-node-max-probe-nodes", type=int, default=20000)
+    parser.add_argument("--encoder-node-max-k", type=int, default=12)
+    parser.add_argument("--encoder-node-seed", type=int, default=1234)
+    parser.add_argument(
+        "--encoder-node-sort-by",
+        choices=[
+            "node_signature_nmi",
+            "node_signature_ari",
+            "node_signature_macro_f1",
+            "node_macro_f1_mean",
+            "service_order_f1",
+            "route_role_f1",
+            "local_cost_f1",
+            "effective_rank_mean",
+            "best_silhouette",
+        ],
+        default="node_signature_nmi",
+    )
+    parser.add_argument(
+        "--encoder-node-output-json",
+        default="logs/xai/encoder/node_probes/comparison.json",
+    )
+    parser.add_argument(
+        "--encoder-node-output-md",
+        default="logs/xai/encoder/node_probes/comparison.md",
+    )
+    parser.add_argument(
+        "--encoder-node-per-config-dir",
+        default="logs/xai/encoder/node_probes/runs",
+    )
+    parser.add_argument(
+        "--encoder-node-plot-dir",
+        default="logs/xai/encoder/node_probes/plots",
+    )
+
+    parser.add_argument("--encoder-edge-num-samples", type=int, default=128)
+    parser.add_argument("--encoder-edge-decode-mode", choices=["greedy", "sample"], default="greedy")
+    parser.add_argument("--encoder-edge-inference-batch-size", type=int, default=32)
+    parser.add_argument("--encoder-edge-max-probe-edges", type=int, default=20000)
+    parser.add_argument("--encoder-edge-max-k", type=int, default=12)
+    parser.add_argument("--encoder-edge-seed", type=int, default=1234)
+    parser.add_argument(
+        "--encoder-edge-sort-by",
+        choices=[
+            "edge_signature_nmi",
+            "edge_signature_ari",
+            "edge_signature_macro_f1",
+            "edge_macro_f1_mean",
+            "same_route_f1",
+            "same_route_auc",
+            "solution_edge_f1",
+            "solution_edge_auc",
+            "local_edge_cost_f1",
+            "effective_rank_mean",
+            "best_silhouette",
+        ],
+        default="edge_signature_nmi",
+    )
+    parser.add_argument(
+        "--encoder-edge-output-json",
+        default="logs/xai/encoder/edge_probes/comparison.json",
+    )
+    parser.add_argument(
+        "--encoder-edge-output-md",
+        default="logs/xai/encoder/edge_probes/comparison.md",
+    )
+    parser.add_argument(
+        "--encoder-edge-per-config-dir",
+        default="logs/xai/encoder/edge_probes/runs",
+    )
+    parser.add_argument(
+        "--encoder-edge-plot-dir",
+        default="logs/xai/encoder/edge_probes/plots",
+    )
+
+    parser.add_argument("--decoder-output-dir", default="logs/xai/decoder/reports")
     parser.add_argument("--decoder-checkpoints-glob", default="output/*/*/*/baseline.pt")
     parser.add_argument("--decoder-num-instances", type=int, default=128)
     parser.add_argument("--decoder-max-steps", type=int, default=300)

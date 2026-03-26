@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--data-seed", type=int, default=None)
-    parser.add_argument("--output-dir", default="logs/xai")
+    parser.add_argument("--output-dir", default="logs/xai/decoder/reports")
     parser.add_argument("--max-instances-to-store", type=int, default=8)
     parser.add_argument(
         "--save-step-records", action=argparse.BooleanOptionalAction, default=True
@@ -182,7 +182,7 @@ def main() -> None:
     if args.summary_output:
         summary_path = Path(args.summary_output)
     else:
-        summary_dir = Path(args.output_dir)
+        summary_dir = Path(args.output_dir).resolve().parent / "comparisons" / "ig_vs_deeplift"
         summary_dir.mkdir(parents=True, exist_ok=True)
         summary_path = summary_dir / f"ig_vs_deeplift_{int(time.time())}.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
