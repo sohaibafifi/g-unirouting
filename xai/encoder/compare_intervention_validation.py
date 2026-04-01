@@ -55,15 +55,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-json",
-        default="logs/xai/encoder/intervention_validation/comparison.json",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/comparison.json",
     )
     parser.add_argument(
         "--output-md",
-        default="logs/xai/encoder/intervention_validation/comparison.md",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/comparison.md",
     )
     parser.add_argument(
         "--per-config-dir",
-        default="logs/xai/encoder/intervention_validation/runs",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/runs",
     )
     return parser
 

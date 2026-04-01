@@ -59,15 +59,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-json",
-        default="logs/xai/encoder/constraints/comparison.json",
+        default="logs/xai/encoder/graph/constraints/comparison.json",
     )
     parser.add_argument(
         "--output-md",
-        default="logs/xai/encoder/constraints/comparison.md",
+        default="logs/xai/encoder/graph/constraints/comparison.md",
     )
     parser.add_argument(
         "--per-config-dir",
-        default="logs/xai/encoder/constraints/runs",
+        default="logs/xai/encoder/graph/constraints/runs",
     )
     return parser
 

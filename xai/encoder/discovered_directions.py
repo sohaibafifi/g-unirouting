@@ -18,6 +18,14 @@ from encoder.concept_bank import CONCEPT_DISPLAY_NAMES
 from encoder.concept_probe import compute_concept_probe_bundle
 from encoder.encoder_probe import _json_ready
 
+PRIMITIVE_CONSTRAINT_DISPLAY_NAMES: Dict[str, str] = {
+    "open_route": "open route",
+    "backhaul": "backhaul",
+    "mixed_backhaul": "mixed backhaul",
+    "distance_limit": "distance limit",
+    "time_windows": "time windows",
+}
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -42,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-components", type=int, default=5)
     parser.add_argument(
         "--output",
-        default="logs/xai/encoder/discovered_directions/probe.json",
+        default="logs/xai/encoder/graph/discovered_directions/probe.json",
     )
     parser.add_argument("--artifacts-output", default=None)
     return parser
@@ -119,7 +127,9 @@ def _summarize_method(
     top_components: int,
     component_vectors: np.ndarray,
     explained_variance_ratio: np.ndarray | None = None,
+    display_names: Dict[str, str] | None = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    display_names = dict(CONCEPT_DISPLAY_NAMES if display_names is None else display_names)
     correlation_matrix = np.full(
         (scores.shape[1], len(concept_names)),
         np.nan,
@@ -152,7 +162,7 @@ def _summarize_method(
             top_concepts = [
                 {
                     "concept_name": name,
-                    "display_name": CONCEPT_DISPLAY_NAMES.get(name, name),
+                    "display_name": display_names.get(name, name),
                     "correlation": corr,
                     "abs_correlation": abs_corr,
                 }
@@ -176,7 +186,7 @@ def _summarize_method(
                     else None
                 ),
                 "best_concept_name": best_name,
-                "best_concept_display": CONCEPT_DISPLAY_NAMES.get(best_name, best_name),
+                "best_concept_display": display_names.get(best_name, best_name),
                 "best_correlation": best_corr,
                 "best_abs_correlation": best_abs,
                 "top_concepts": top_concepts,
@@ -195,7 +205,7 @@ def _summarize_method(
                 "best_component_index": None,
                 "best_correlation": None,
                 "best_abs_correlation": None,
-                "display_name": CONCEPT_DISPLAY_NAMES.get(concept_name, concept_name),
+                "display_name": display_names.get(concept_name, concept_name),
             }
             continue
         valid_indices = np.flatnonzero(finite)
@@ -206,7 +216,7 @@ def _summarize_method(
             "best_component_index": int(best_local_idx + 1),
             "best_correlation": best_corr,
             "best_abs_correlation": best_abs_corr,
-            "display_name": CONCEPT_DISPLAY_NAMES.get(concept_name, concept_name),
+            "display_name": display_names.get(concept_name, concept_name),
         }
         if not np.isfinite(best_concept_abs_corr) or best_abs_corr > best_concept_abs_corr:
             best_concept_abs_corr = best_abs_corr
@@ -242,7 +252,7 @@ def _summarize_method(
         ),
         "strongest_concept_name": best_concept_name,
         "strongest_concept_display": (
-            CONCEPT_DISPLAY_NAMES.get(best_concept_name, best_concept_name)
+            display_names.get(best_concept_name, best_concept_name)
             if best_concept_name
             else None
         ),
@@ -288,6 +298,20 @@ def compute_discovered_direction_bundle(
         for name, values in (concept_artifacts.get("concept_raw_values") or {}).items()
     }
     concept_names = sorted(concept_raw_values.keys())
+    primitive_constraint_raw_values = {
+        str(name): np.asarray(values, dtype=np.float32)
+        for name, values in (concept_artifacts.get("primitive_raw_values") or {}).items()
+    }
+    primitive_constraint_names = sorted(primitive_constraint_raw_values.keys())
+    known_bank_names = primitive_constraint_names + concept_names
+    known_bank_display_names = {
+        **{name: PRIMITIVE_CONSTRAINT_DISPLAY_NAMES.get(name, name) for name in primitive_constraint_names},
+        **{name: CONCEPT_DISPLAY_NAMES.get(name, name) for name in concept_names},
+    }
+    known_bank_raw_values = {
+        **primitive_constraint_raw_values,
+        **concept_raw_values,
+    }
     top_components = min(int(args.top_components), int(args.num_components))
 
     pca, pca_scores = _fit_pca(
@@ -304,6 +328,26 @@ def compute_discovered_direction_bundle(
         component_vectors=np.asarray(pca.components_, dtype=np.float32),
         explained_variance_ratio=np.asarray(pca.explained_variance_ratio_, dtype=np.float64),
     )
+    pca_constraint_payload, pca_constraint_artifacts = _summarize_method(
+        method_name="pca",
+        scores=pca_scores,
+        concept_names=primitive_constraint_names,
+        concept_raw_values=primitive_constraint_raw_values,
+        top_components=min(top_components, pca_scores.shape[1]),
+        component_vectors=np.asarray(pca.components_, dtype=np.float32),
+        explained_variance_ratio=np.asarray(pca.explained_variance_ratio_, dtype=np.float64),
+        display_names=PRIMITIVE_CONSTRAINT_DISPLAY_NAMES,
+    )
+    pca_known_payload, pca_known_artifacts = _summarize_method(
+        method_name="pca",
+        scores=pca_scores,
+        concept_names=known_bank_names,
+        concept_raw_values=known_bank_raw_values,
+        top_components=min(top_components, pca_scores.shape[1]),
+        component_vectors=np.asarray(pca.components_, dtype=np.float32),
+        explained_variance_ratio=np.asarray(pca.explained_variance_ratio_, dtype=np.float64),
+        display_names=known_bank_display_names,
+    )
 
     ica, ica_scores = _fit_ica(
         features,
@@ -319,6 +363,26 @@ def compute_discovered_direction_bundle(
         component_vectors=np.asarray(ica.components_, dtype=np.float32),
         explained_variance_ratio=None,
     )
+    ica_constraint_payload, ica_constraint_artifacts = _summarize_method(
+        method_name="ica",
+        scores=ica_scores,
+        concept_names=primitive_constraint_names,
+        concept_raw_values=primitive_constraint_raw_values,
+        top_components=min(top_components, ica_scores.shape[1]),
+        component_vectors=np.asarray(ica.components_, dtype=np.float32),
+        explained_variance_ratio=None,
+        display_names=PRIMITIVE_CONSTRAINT_DISPLAY_NAMES,
+    )
+    ica_known_payload, ica_known_artifacts = _summarize_method(
+        method_name="ica",
+        scores=ica_scores,
+        concept_names=known_bank_names,
+        concept_raw_values=known_bank_raw_values,
+        top_components=min(top_components, ica_scores.shape[1]),
+        component_vectors=np.asarray(ica.components_, dtype=np.float32),
+        explained_variance_ratio=None,
+        display_names=known_bank_display_names,
+    )
 
     report = {
         "config": dict(concept_report["config"]),
@@ -329,9 +393,22 @@ def compute_discovered_direction_bundle(
             "raw_value_summary": dict(concept_report["concept_bank"]["raw_value_summary"]),
             "core_concepts": list(concept_report["concept_bank"]["core_concepts"]),
         },
+        "constraint_reference": {
+            "display_names": dict(PRIMITIVE_CONSTRAINT_DISPLAY_NAMES),
+            "names": list(primitive_constraint_names),
+        },
+        "known_bank_reference": {
+            "constraint_names": list(primitive_constraint_names),
+            "concept_names": list(concept_names),
+            "display_names": dict(known_bank_display_names),
+        },
         "discovered_directions": pca_payload,
+        "constraint_reference_alignment": pca_constraint_payload,
+        "known_bank_alignment": pca_known_payload,
         "alternative_methods": {
             "ica": ica_payload,
+            "constraint_reference_alignment": ica_constraint_payload,
+            "known_bank_alignment": ica_known_payload,
         },
     }
 
@@ -349,6 +426,16 @@ def compute_discovered_direction_bundle(
         "ica_correlation_matrix": ica_artifacts["correlation_matrix"],
         "concept_names": np.asarray(concept_names),
         "concept_raw_values": concept_raw_values,
+        "constraint_names": np.asarray(primitive_constraint_names),
+        "constraint_raw_values": primitive_constraint_raw_values,
+        "constraint_correlation_matrix": pca_constraint_artifacts["correlation_matrix"],
+        "ica_constraint_correlation_matrix": ica_constraint_artifacts["correlation_matrix"],
+        "known_bank_names": np.asarray(known_bank_names),
+        "known_bank_types": np.asarray(
+            ["constraint"] * len(primitive_constraint_names) + ["concept"] * len(concept_names)
+        ),
+        "known_bank_correlation_matrix": pca_known_artifacts["correlation_matrix"],
+        "ica_known_bank_correlation_matrix": ica_known_artifacts["correlation_matrix"],
     }
     return report, artifacts
 
@@ -379,9 +466,18 @@ def write_discovered_direction_artifacts(artifacts: Dict[str, Any], output_path:
         "ica_cumulative_explained_variance_ratio": artifacts["ica_cumulative_explained_variance_ratio"],
         "ica_correlation_matrix": artifacts["ica_correlation_matrix"],
         "concept_names": artifacts["concept_names"],
+        "constraint_names": artifacts["constraint_names"],
+        "constraint_correlation_matrix": artifacts["constraint_correlation_matrix"],
+        "ica_constraint_correlation_matrix": artifacts["ica_constraint_correlation_matrix"],
+        "known_bank_names": artifacts["known_bank_names"],
+        "known_bank_types": artifacts["known_bank_types"],
+        "known_bank_correlation_matrix": artifacts["known_bank_correlation_matrix"],
+        "ica_known_bank_correlation_matrix": artifacts["ica_known_bank_correlation_matrix"],
     }
     for name, values in sorted((artifacts.get("concept_raw_values") or {}).items()):
         flattened[f"concept_value__{name}"] = np.asarray(values, dtype=np.float32)
+    for name, values in sorted((artifacts.get("constraint_raw_values") or {}).items()):
+        flattened[f"constraint_value__{name}"] = np.asarray(values, dtype=np.float32)
     np.savez_compressed(path, **flattened)
     return path
 

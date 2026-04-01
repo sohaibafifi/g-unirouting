@@ -311,6 +311,35 @@ def _encoder_discovered_direction_flow(
     }
 
 
+def _encoder_unexplained_dossiers_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    input_json = _resolve_path(project_root, args.encoder_discovered_output_json)
+    output_dir = _resolve_path(project_root, args.encoder_unexplained_output_dir)
+
+    cmd = [
+        args.python_bin,
+        "xai/inspect_unexplained_directions.py",
+        f"--input-json={input_json}",
+        f"--output-dir={output_dir}",
+        f"--top-components={args.encoder_unexplained_top_components}",
+        f"--known-threshold={args.encoder_unexplained_known_threshold}",
+        f"--top-instances={args.encoder_unexplained_top_instances}",
+    ]
+    _run(cmd, project_root, env, args.dry_run, executed)
+
+    return {
+        "input_json": str(input_json),
+        "output_dir": str(output_dir),
+        "top_components": int(args.encoder_unexplained_top_components),
+        "known_threshold": float(args.encoder_unexplained_known_threshold),
+        "top_instances": int(args.encoder_unexplained_top_instances),
+    }
+
+
 def _encoder_node_flow(
     args: argparse.Namespace,
     project_root: Path,
@@ -531,6 +560,10 @@ def _encoder_flow(
         manifest["graph_concepts"] = _encoder_graph_concept_flow(args, project_root, env, executed)
     if not args.skip_encoder_discovered_directions:
         manifest["discovered_directions"] = _encoder_discovered_direction_flow(
+            args, project_root, env, executed
+        )
+    if args.enable_encoder_unexplained_dossiers:
+        manifest["unexplained_dossiers"] = _encoder_unexplained_dossiers_flow(
             args, project_root, env, executed
         )
     if args.enable_encoder_discovered_stability:
@@ -882,6 +915,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-encoder-constraints", action="store_true")
     parser.add_argument("--skip-encoder-graph-concepts", action="store_true")
     parser.add_argument("--skip-encoder-discovered-directions", action="store_true")
+    parser.add_argument("--enable-encoder-unexplained-dossiers", action="store_true")
     parser.add_argument("--enable-encoder-discovered-stability", action="store_true")
     parser.add_argument("--enable-encoder-intervention-validation", action="store_true")
     parser.add_argument("--skip-encoder-node-probes", action="store_true")
@@ -919,19 +953,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-output-json",
-        default="logs/xai/encoder/constraints/comparison.json",
+        default="logs/xai/encoder/graph/constraints/comparison.json",
     )
     parser.add_argument(
         "--encoder-output-md",
-        default="logs/xai/encoder/constraints/comparison.md",
+        default="logs/xai/encoder/graph/constraints/comparison.md",
     )
     parser.add_argument(
         "--encoder-per-config-dir",
-        default="logs/xai/encoder/constraints/runs",
+        default="logs/xai/encoder/graph/constraints/runs",
     )
     parser.add_argument(
         "--encoder-plot-dir",
-        default="logs/xai/encoder/constraints/plots",
+        default="logs/xai/encoder/graph/constraints/plots",
     )
     parser.add_argument(
         "--encoder-projection-methods",
@@ -974,19 +1008,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-concept-output-json",
-        default="logs/xai/encoder/graph_concepts/comparison.json",
+        default="logs/xai/encoder/graph/concepts/comparison.json",
     )
     parser.add_argument(
         "--encoder-concept-output-md",
-        default="logs/xai/encoder/graph_concepts/comparison.md",
+        default="logs/xai/encoder/graph/concepts/comparison.md",
     )
     parser.add_argument(
         "--encoder-concept-per-config-dir",
-        default="logs/xai/encoder/graph_concepts/runs",
+        default="logs/xai/encoder/graph/concepts/runs",
     )
     parser.add_argument(
         "--encoder-concept-plot-dir",
-        default="logs/xai/encoder/graph_concepts/plots",
+        default="logs/xai/encoder/graph/concepts/plots",
     )
 
     parser.add_argument("--encoder-discovered-num-samples", type=int, default=1024)
@@ -1013,20 +1047,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-discovered-output-json",
-        default="logs/xai/encoder/discovered_directions/comparison.json",
+        default="logs/xai/encoder/graph/discovered_directions/comparison.json",
     )
     parser.add_argument(
         "--encoder-discovered-output-md",
-        default="logs/xai/encoder/discovered_directions/comparison.md",
+        default="logs/xai/encoder/graph/discovered_directions/comparison.md",
     )
     parser.add_argument(
         "--encoder-discovered-per-config-dir",
-        default="logs/xai/encoder/discovered_directions/runs",
+        default="logs/xai/encoder/graph/discovered_directions/runs",
     )
     parser.add_argument(
         "--encoder-discovered-plot-dir",
-        default="logs/xai/encoder/discovered_directions/plots",
+        default="logs/xai/encoder/graph/discovered_directions/plots",
     )
+    parser.add_argument(
+        "--encoder-unexplained-output-dir",
+        default="logs/xai/encoder/graph/discovered_directions/unexplained_dossiers",
+    )
+    parser.add_argument("--encoder-unexplained-top-components", type=int, default=5)
+    parser.add_argument("--encoder-unexplained-known-threshold", type=float, default=0.3)
+    parser.add_argument("--encoder-unexplained-top-instances", type=int, default=5)
     parser.add_argument("--encoder-discovered-stability-num-samples", type=int, default=1024)
     parser.add_argument(
         "--encoder-discovered-stability-pooling",
@@ -1052,19 +1093,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-discovered-stability-output-json",
-        default="logs/xai/encoder/discovered_direction_stability/comparison.json",
+        default="logs/xai/encoder/graph/discovered_directions/stability/comparison.json",
     )
     parser.add_argument(
         "--encoder-discovered-stability-output-md",
-        default="logs/xai/encoder/discovered_direction_stability/comparison.md",
+        default="logs/xai/encoder/graph/discovered_directions/stability/comparison.md",
     )
     parser.add_argument(
         "--encoder-discovered-stability-per-config-dir",
-        default="logs/xai/encoder/discovered_direction_stability/runs",
+        default="logs/xai/encoder/graph/discovered_directions/stability/runs",
     )
     parser.add_argument(
         "--encoder-discovered-stability-plot-dir",
-        default="logs/xai/encoder/discovered_direction_stability/plots",
+        default="logs/xai/encoder/graph/discovered_directions/stability/plots",
     )
 
     parser.add_argument("--encoder-intervention-num-samples", type=int, default=512)
@@ -1089,19 +1130,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-intervention-output-json",
-        default="logs/xai/encoder/intervention_validation/comparison.json",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/comparison.json",
     )
     parser.add_argument(
         "--encoder-intervention-output-md",
-        default="logs/xai/encoder/intervention_validation/comparison.md",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/comparison.md",
     )
     parser.add_argument(
         "--encoder-intervention-per-config-dir",
-        default="logs/xai/encoder/intervention_validation/runs",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/runs",
     )
     parser.add_argument(
         "--encoder-intervention-plot-dir",
-        default="logs/xai/encoder/intervention_validation/plots",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/plots",
     )
 
     parser.add_argument("--encoder-node-num-samples", type=int, default=256)
@@ -1127,19 +1168,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-node-output-json",
-        default="logs/xai/encoder/node_probes/comparison.json",
+        default="logs/xai/encoder/node/probes/comparison.json",
     )
     parser.add_argument(
         "--encoder-node-output-md",
-        default="logs/xai/encoder/node_probes/comparison.md",
+        default="logs/xai/encoder/node/probes/comparison.md",
     )
     parser.add_argument(
         "--encoder-node-per-config-dir",
-        default="logs/xai/encoder/node_probes/runs",
+        default="logs/xai/encoder/node/probes/runs",
     )
     parser.add_argument(
         "--encoder-node-plot-dir",
-        default="logs/xai/encoder/node_probes/plots",
+        default="logs/xai/encoder/node/probes/plots",
     )
 
     parser.add_argument("--encoder-edge-num-samples", type=int, default=128)
@@ -1167,19 +1208,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--encoder-edge-output-json",
-        default="logs/xai/encoder/edge_probes/comparison.json",
+        default="logs/xai/encoder/edge/probes/comparison.json",
     )
     parser.add_argument(
         "--encoder-edge-output-md",
-        default="logs/xai/encoder/edge_probes/comparison.md",
+        default="logs/xai/encoder/edge/probes/comparison.md",
     )
     parser.add_argument(
         "--encoder-edge-per-config-dir",
-        default="logs/xai/encoder/edge_probes/runs",
+        default="logs/xai/encoder/edge/probes/runs",
     )
     parser.add_argument(
         "--encoder-edge-plot-dir",
-        default="logs/xai/encoder/edge_probes/plots",
+        default="logs/xai/encoder/edge/probes/plots",
     )
 
     parser.add_argument("--decoder-output-dir", default="logs/xai/decoder/reports")

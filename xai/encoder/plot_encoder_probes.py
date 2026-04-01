@@ -36,11 +36,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--input-json",
-        default="logs/xai/encoder/constraints/comparison.json",
+        default="logs/xai/encoder/graph/constraints/comparison.json",
     )
     parser.add_argument(
         "--output-dir",
-        default="logs/xai/encoder/constraints/plots",
+        default="logs/xai/encoder/graph/constraints/plots",
     )
     parser.add_argument(
         "--projection-methods",

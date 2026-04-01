@@ -50,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-probe-nodes", type=int, default=20000)
     parser.add_argument("--max-k", type=int, default=12)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--output", default="logs/xai/encoder/node_probes/probe.json")
+    parser.add_argument("--output", default="logs/xai/encoder/node/probes/probe.json")
     parser.add_argument("--artifacts-output", default=None)
     return parser
 

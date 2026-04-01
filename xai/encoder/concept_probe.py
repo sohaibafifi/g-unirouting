@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-k", type=int, default=12)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--output", default="logs/xai/encoder/graph_concepts/probe.json")
+    parser.add_argument("--output", default="logs/xai/encoder/graph/concepts/probe.json")
     parser.add_argument("--artifacts-output", default=None)
     return parser
 
@@ -87,6 +87,15 @@ def compute_concept_probe_bundle(args: argparse.Namespace) -> Tuple[Dict[str, An
 
     concept_bank = compute_concept_bank(node_features, global_features, metadata)
     concept_states = concept_bank["concept_states"]
+    primitive_flags: Dict[str, list[str]] = {}
+    primitive_raw_values: Dict[str, np.ndarray] = {}
+    for flag_name in sorted(metadata[0]["flags"].keys() if metadata else []):
+        labels = ["on" if bool(meta["flags"][flag_name]) else "off" for meta in metadata]
+        primitive_flags[flag_name] = labels
+        primitive_raw_values[flag_name] = np.asarray(
+            [1.0 if label == "on" else 0.0 for label in labels],
+            dtype=np.float32,
+        )
     core_signatures = concept_bank["core_concept_signatures"]
     probe_core_signatures = _collapse_rare_labels(core_signatures, min_count=2)
     unique_signatures = sorted(set(core_signatures))
@@ -196,6 +205,14 @@ def compute_concept_probe_bundle(args: argparse.Namespace) -> Tuple[Dict[str, An
             name: np.asarray(values, dtype=np.float32)
             for name, values in sorted(concept_bank["concept_raw_values"].items())
         },
+        "primitive_flags": {
+            name: np.asarray(values)
+            for name, values in sorted(primitive_flags.items())
+        },
+        "primitive_raw_values": {
+            name: np.asarray(values, dtype=np.float32)
+            for name, values in sorted(primitive_raw_values.items())
+        },
     }
     return report, artifacts
 
@@ -227,6 +244,10 @@ def write_concept_probe_artifacts(artifacts: Dict[str, Any], output_path: str) -
         flattened[f"concept_state__{name}"] = values
     for name, values in sorted((artifacts.get("concept_raw_values") or {}).items()):
         flattened[f"concept_value__{name}"] = values
+    for name, values in sorted((artifacts.get("primitive_flags") or {}).items()):
+        flattened[f"primitive__{name}"] = values
+    for name, values in sorted((artifacts.get("primitive_raw_values") or {}).items()):
+        flattened[f"primitive_value__{name}"] = values
     np.savez_compressed(path, **flattened)
     return path
 

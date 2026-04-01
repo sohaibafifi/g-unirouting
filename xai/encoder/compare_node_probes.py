@@ -54,9 +54,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ],
         default="node_signature_nmi",
     )
-    parser.add_argument("--output-json", default="logs/xai/encoder/node_probes/comparison.json")
-    parser.add_argument("--output-md", default="logs/xai/encoder/node_probes/comparison.md")
-    parser.add_argument("--per-config-dir", default="logs/xai/encoder/node_probes/runs")
+    parser.add_argument("--output-json", default="logs/xai/encoder/node/probes/comparison.json")
+    parser.add_argument("--output-md", default="logs/xai/encoder/node/probes/comparison.md")
+    parser.add_argument("--per-config-dir", default="logs/xai/encoder/node/probes/runs")
     return parser
 
 

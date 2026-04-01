@@ -48,11 +48,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sort-by",
         choices=[
             "mean_best_abs_correlation_top_components",
+            "known_bank_mean_best_abs_correlation_top_components",
+            "constraint_mean_best_abs_correlation_top_components",
             "best_abs_correlation_overall",
             "num_components_abs_correlation_ge_0_5",
+            "known_bank_num_components_unexplained_lt_0_3",
             "ica_mean_best_abs_correlation_top_components",
+            "ica_known_bank_mean_best_abs_correlation_top_components",
+            "ica_constraint_mean_best_abs_correlation_top_components",
             "ica_best_abs_correlation_overall",
             "ica_num_components_abs_correlation_ge_0_5",
+            "ica_known_bank_num_components_unexplained_lt_0_3",
             "top3_cumulative_explained_variance_ratio",
             "effective_rank_mean",
             "distance_budget_best_abs_correlation",
@@ -62,15 +68,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-json",
-        default="logs/xai/encoder/discovered_directions/comparison.json",
+        default="logs/xai/encoder/graph/discovered_directions/comparison.json",
     )
     parser.add_argument(
         "--output-md",
-        default="logs/xai/encoder/discovered_directions/comparison.md",
+        default="logs/xai/encoder/graph/discovered_directions/comparison.md",
     )
     parser.add_argument(
         "--per-config-dir",
-        default="logs/xai/encoder/discovered_directions/runs",
+        default="logs/xai/encoder/graph/discovered_directions/runs",
     )
     return parser
 
@@ -108,6 +114,17 @@ def _nested_get(payload: Dict[str, Any], path: Iterable[str]) -> Any:
 
 
 def _summary_row(config_id: int, report: Dict[str, Any]) -> Dict[str, Any]:
+    known_ge_0_3 = _nested_get(
+        report, ["known_bank_alignment", "summary", "num_components_abs_correlation_ge_0_3"]
+    )
+    known_num_components = _nested_get(report, ["known_bank_alignment", "num_components"])
+    ica_known_ge_0_3 = _nested_get(
+        report,
+        ["alternative_methods", "known_bank_alignment", "summary", "num_components_abs_correlation_ge_0_3"],
+    )
+    ica_known_num_components = _nested_get(
+        report, ["alternative_methods", "known_bank_alignment", "num_components"]
+    )
     return {
         "config_id": config_id,
         "model": report["config"]["config_repr"],
@@ -119,11 +136,32 @@ def _summary_row(config_id: int, report: Dict[str, Any]) -> Dict[str, Any]:
         "best_abs_correlation_overall": _nested_get(
             report, ["discovered_directions", "summary", "best_abs_correlation_overall"]
         ),
+        "constraint_mean_best_abs_correlation_top_components": _nested_get(
+            report, ["constraint_reference_alignment", "summary", "mean_best_abs_correlation_top_components"]
+        ),
+        "constraint_best_abs_correlation_overall": _nested_get(
+            report, ["constraint_reference_alignment", "summary", "best_abs_correlation_overall"]
+        ),
+        "known_bank_mean_best_abs_correlation_top_components": _nested_get(
+            report, ["known_bank_alignment", "summary", "mean_best_abs_correlation_top_components"]
+        ),
+        "known_bank_best_abs_correlation_overall": _nested_get(
+            report, ["known_bank_alignment", "summary", "best_abs_correlation_overall"]
+        ),
         "num_components_abs_correlation_ge_0_3": _nested_get(
             report, ["discovered_directions", "summary", "num_components_abs_correlation_ge_0_3"]
         ),
         "num_components_abs_correlation_ge_0_5": _nested_get(
             report, ["discovered_directions", "summary", "num_components_abs_correlation_ge_0_5"]
+        ),
+        "known_bank_num_components_abs_correlation_ge_0_3": known_ge_0_3,
+        "known_bank_num_components_abs_correlation_ge_0_5": _nested_get(
+            report, ["known_bank_alignment", "summary", "num_components_abs_correlation_ge_0_5"]
+        ),
+        "known_bank_num_components_unexplained_lt_0_3": (
+            int(known_num_components) - int(known_ge_0_3)
+            if known_num_components is not None and known_ge_0_3 is not None
+            else None
         ),
         "ica_mean_best_abs_correlation_top_components": _nested_get(
             report,
@@ -133,6 +171,22 @@ def _summary_row(config_id: int, report: Dict[str, Any]) -> Dict[str, Any]:
             report,
             ["alternative_methods", "ica", "summary", "best_abs_correlation_overall"],
         ),
+        "ica_constraint_mean_best_abs_correlation_top_components": _nested_get(
+            report,
+            ["alternative_methods", "constraint_reference_alignment", "summary", "mean_best_abs_correlation_top_components"],
+        ),
+        "ica_constraint_best_abs_correlation_overall": _nested_get(
+            report,
+            ["alternative_methods", "constraint_reference_alignment", "summary", "best_abs_correlation_overall"],
+        ),
+        "ica_known_bank_mean_best_abs_correlation_top_components": _nested_get(
+            report,
+            ["alternative_methods", "known_bank_alignment", "summary", "mean_best_abs_correlation_top_components"],
+        ),
+        "ica_known_bank_best_abs_correlation_overall": _nested_get(
+            report,
+            ["alternative_methods", "known_bank_alignment", "summary", "best_abs_correlation_overall"],
+        ),
         "ica_num_components_abs_correlation_ge_0_3": _nested_get(
             report,
             ["alternative_methods", "ica", "summary", "num_components_abs_correlation_ge_0_3"],
@@ -140,6 +194,16 @@ def _summary_row(config_id: int, report: Dict[str, Any]) -> Dict[str, Any]:
         "ica_num_components_abs_correlation_ge_0_5": _nested_get(
             report,
             ["alternative_methods", "ica", "summary", "num_components_abs_correlation_ge_0_5"],
+        ),
+        "ica_known_bank_num_components_abs_correlation_ge_0_3": ica_known_ge_0_3,
+        "ica_known_bank_num_components_abs_correlation_ge_0_5": _nested_get(
+            report,
+            ["alternative_methods", "known_bank_alignment", "summary", "num_components_abs_correlation_ge_0_5"],
+        ),
+        "ica_known_bank_num_components_unexplained_lt_0_3": (
+            int(ica_known_num_components) - int(ica_known_ge_0_3)
+            if ica_known_num_components is not None and ica_known_ge_0_3 is not None
+            else None
         ),
         "top1_explained_variance_ratio": _nested_get(
             report, ["discovered_directions", "summary", "top1_explained_variance_ratio"]
@@ -229,6 +293,7 @@ def _render_console_table(rows: List[Dict[str, Any]], sort_by: str) -> None:
     table.add_column("model", style="bold", overflow="fold", max_width=48)
     table.add_column("pca", overflow="fold")
     table.add_column("ica", overflow="fold")
+    table.add_column("known", overflow="fold")
     table.add_column("variance", overflow="fold")
     table.add_column("strongest", overflow="fold")
     table.add_column("richness", overflow="fold")
@@ -249,6 +314,13 @@ def _render_console_table(rows: List[Dict[str, Any]], sort_by: str) -> None:
                     f"mean={_fmt(row['ica_mean_best_abs_correlation_top_components'])}",
                     f"best={_fmt(row['ica_best_abs_correlation_overall'])}",
                     f"n>=0.5={_fmt(row['ica_num_components_abs_correlation_ge_0_5'], ndigits=0)}",
+                ]
+            ),
+            "\n".join(
+                [
+                    f"cst={_fmt(row['constraint_mean_best_abs_correlation_top_components'])}",
+                    f"bank={_fmt(row['known_bank_mean_best_abs_correlation_top_components'])}",
+                    f"unx={_fmt(row['known_bank_num_components_unexplained_lt_0_3'], ndigits=0)}",
                 ]
             ),
             "\n".join(
@@ -279,6 +351,11 @@ def _render_console_table(rows: List[Dict[str, Any]], sort_by: str) -> None:
 def _render_interpretation(rows: List[Dict[str, Any]]) -> List[str]:
     lines = ["## Automatic Interpretation", ""]
     best_alignment = _best_row(rows, "mean_best_abs_correlation_top_components")
+    best_known_alignment = _best_row(rows, "known_bank_mean_best_abs_correlation_top_components")
+    most_unexplained = None
+    candidates = [row for row in rows if _safe_float(row.get("known_bank_num_components_unexplained_lt_0_3")) is not None]
+    if candidates:
+        most_unexplained = max(candidates, key=lambda row: _safe_float(row.get("known_bank_num_components_unexplained_lt_0_3")) or float("-inf"))
     best_clean_axes = _best_row(rows, "num_components_abs_correlation_ge_0_5")
     best_variance = _best_row(rows, "top3_cumulative_explained_variance_ratio")
     best_ica_alignment = _best_row(rows, "ica_mean_best_abs_correlation_top_components")
@@ -289,6 +366,13 @@ def _render_interpretation(rows: List[Dict[str, Any]]) -> List[str]:
             f"`{best_alignment['model']}` with "
             f"`mean_abs_corr={_fmt(best_alignment['mean_best_abs_correlation_top_components'])}`. "
             "This config makes the first latent directions easiest to interpret after the fact."
+        )
+    if best_known_alignment is not None:
+        lines.append(
+            "- Best alignment with the full known bank (constraints + concepts): "
+            f"`{best_known_alignment['model']}` with "
+            f"`known_mean_abs_corr={_fmt(best_known_alignment['known_bank_mean_best_abs_correlation_top_components'])}`. "
+            "This is the best config when you want to know whether leading directions are already explained by anything we explicitly know."
         )
     if best_ica_alignment is not None:
         lines.append(
@@ -320,14 +404,22 @@ def _render_interpretation(rows: List[Dict[str, Any]]) -> List[str]:
             "- The config with the strongest average alignment is not the same as the one with the most clean axes. "
             "This means one model can distribute interpretable information broadly, while another concentrates it in fewer but clearer components."
         )
+    if most_unexplained is not None and (_safe_float(most_unexplained.get("known_bank_num_components_unexplained_lt_0_3")) or 0.0) > 0:
+        lines.append(
+            "- Some leading directions remain unexplained even after adding known constraints and known concepts. "
+            f"The strongest case here is `{most_unexplained['model']}` with "
+            f"`unexplained={_fmt(most_unexplained['known_bank_num_components_unexplained_lt_0_3'], ndigits=0)}` components below the `0.3` explanation threshold."
+        )
     lines.extend(
         [
             "",
             "## Decision Notes",
             "",
             "- Use `mean_abs_corr` to compare broad interpretability of the first discovered directions.",
+            "- Use `known_mean_abs_corr` to check whether the same directions are explained by any known signal at all, including primitive constraints.",
+            "- Use `unexplained` to identify components that are still not explained by the current bank.",
             "- Use `n>=0.5` when you want a few very clear axes rather than many moderate ones.",
-            "- Read the per-concept heatmap to see which instance properties become explicit directions: geometry, load, distance budget, or combined tension.",
+            "- Read the known-bank heatmaps to separate directions that are mostly constraints from directions that are mostly concepts.",
             "- Keep `effective_rank` as a secondary signal: rich spaces are useful only when the discovered directions stay interpretable.",
         ]
     )
@@ -369,11 +461,17 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
         "id",
         "model",
         "mean_abs_corr",
+        "known_mean_abs_corr",
+        "constraint_mean_abs_corr",
         "ica_mean_abs_corr",
+        "ica_known_mean_abs_corr",
         "best_abs_corr",
+        "known_best_abs_corr",
         "ica_best_abs_corr",
         "n_ge_0_5",
+        "known_unexplained_lt_0.3",
         "ica_n_ge_0_5",
+        "ica_known_unexplained_lt_0.3",
         "pc1_evr",
         "pc3_evr",
         "strongest_concept",
@@ -400,8 +498,11 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
         "## Metrics Used",
         "",
         "- `mean_abs_corr` / `ica_mean_abs_corr`: moyenne du meilleur `|corr|` des premières composantes avec les concepts connus. Plus c'est haut, plus les directions découvertes sont facilement interprétables.",
+        "- `constraint_mean_abs_corr`: même idée, mais uniquement avec les contraintes primitives connues.",
+        "- `known_mean_abs_corr` / `ica_known_mean_abs_corr`: meilleure lecture globale avec la banque complète `contraintes + concepts`.",
         "- `best_abs_corr` / `ica_best_abs_corr`: meilleure corrélation absolue trouvée entre une composante et un concept. Plus c'est haut, plus au moins une direction est très lisible.",
         "- `n_ge_0_5` / `ica_n_ge_0_5`: nombre de composantes dont la meilleure corrélation absolue atteint au moins `0.5`. Plus c'est haut, plus il existe d'axes clairs.",
+        "- `known_unexplained_lt_0.3` / `ica_known_unexplained_lt_0.3`: nombre de composantes qui restent sous `0.3` de corrélation absolue même avec la banque complète. Plus c'est haut, plus il reste de directions non expliquées.",
         "- `pc1_evr` / `pc3_evr`: variance expliquée par la première composante PCA, puis cumul des trois premières. Ces métriques n'existent que pour PCA.",
         "- `distance_budget_corr` / `combined_tension_corr`: meilleure corrélation absolue atteinte pour ces concepts précis.",
         "- `eff_rank` / `stable_rank`: richesse globale du latent, à lire comme métriques secondaires.",
@@ -419,11 +520,17 @@ def _render_markdown(rows: List[Dict[str, Any]], sort_by: str, args: argparse.Na
                     str(row["config_id"]),
                     str(row["model"]),
                     _fmt(row["mean_best_abs_correlation_top_components"]),
+                    _fmt(row["known_bank_mean_best_abs_correlation_top_components"]),
+                    _fmt(row["constraint_mean_best_abs_correlation_top_components"]),
                     _fmt(row["ica_mean_best_abs_correlation_top_components"]),
+                    _fmt(row["ica_known_bank_mean_best_abs_correlation_top_components"]),
                     _fmt(row["best_abs_correlation_overall"]),
+                    _fmt(row["known_bank_best_abs_correlation_overall"]),
                     _fmt(row["ica_best_abs_correlation_overall"]),
                     _fmt(row["num_components_abs_correlation_ge_0_5"], ndigits=0),
+                    _fmt(row["known_bank_num_components_unexplained_lt_0_3"], ndigits=0),
                     _fmt(row["ica_num_components_abs_correlation_ge_0_5"], ndigits=0),
+                    _fmt(row["ica_known_bank_num_components_unexplained_lt_0_3"], ndigits=0),
                     _fmt(row["top1_explained_variance_ratio"]),
                     _fmt(row["top3_cumulative_explained_variance_ratio"]),
                     str(row["strongest_concept_display"] or "-"),

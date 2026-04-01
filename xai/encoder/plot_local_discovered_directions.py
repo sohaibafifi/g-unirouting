@@ -25,17 +25,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(level: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate plots for discovered latent directions in encoder representations."
+        description=f"Generate plots for discovered latent directions in encoder {level}-level representations."
     )
     parser.add_argument(
         "--input-json",
-        default="logs/xai/encoder/graph/discovered_directions/comparison.json",
+        default=f"logs/xai/encoder/{level}/discovered_directions/comparison.json",
     )
     parser.add_argument(
         "--output-dir",
-        default="logs/xai/encoder/graph/discovered_directions/plots",
+        default=f"logs/xai/encoder/{level}/discovered_directions/plots",
     )
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--top-components", type=int, default=5)
@@ -101,10 +101,9 @@ def _load_artifacts(report: Dict[str, Any]) -> Dict[str, Any]:
     artifact_path = _nested_get(report, ["artifacts", "discovered_directions_path"])
     if not artifact_path:
         raise FileNotFoundError(
-            "Missing discovered-direction artifact path in report. Re-run compare_discovered_directions.py."
+            "Missing discovered-direction artifact path in report. Re-run the compare script."
         )
-    path = Path(str(artifact_path))
-    loaded = np.load(path, allow_pickle=False)
+    loaded = np.load(Path(str(artifact_path)), allow_pickle=False)
     concept_raw_values: Dict[str, Any] = {}
     for key in loaded.files:
         if key.startswith("concept_value__"):
@@ -123,15 +122,25 @@ def _load_artifacts(report: Dict[str, Any]) -> Dict[str, Any]:
         ].astype(np.float32),
         "ica_correlation_matrix": loaded["ica_correlation_matrix"].astype(np.float32),
         "concept_names": loaded["concept_names"].astype(str),
-        "constraint_names": loaded["constraint_names"].astype(str),
-        "constraint_correlation_matrix": loaded["constraint_correlation_matrix"].astype(np.float32),
-        "ica_constraint_correlation_matrix": loaded["ica_constraint_correlation_matrix"].astype(np.float32),
-        "known_bank_names": loaded["known_bank_names"].astype(str),
-        "known_bank_types": loaded["known_bank_types"].astype(str),
-        "known_bank_correlation_matrix": loaded["known_bank_correlation_matrix"].astype(np.float32),
-        "ica_known_bank_correlation_matrix": loaded["ica_known_bank_correlation_matrix"].astype(np.float32),
         "concept_raw_values": concept_raw_values,
     }
+
+
+def _concept_names_and_labels(rows: Sequence[Dict[str, Any]], reports_by_model: Dict[str, Dict[str, Any]]) -> tuple[List[str], List[str]]:
+    if not rows:
+        return [], []
+    reference_report = reports_by_model[str(rows[0]["model"])]
+    artifacts = _load_artifacts(reference_report)
+    concept_names = artifacts["concept_names"].astype(str).tolist()
+    display_names = []
+    for name in concept_names:
+        display_names.append(
+            str(
+                _nested_get(reference_report, ["discovered_directions", "concept_alignment", name, "display_name"])
+                or name
+            )
+        )
+    return concept_names, display_names
 
 
 def _annotate_heatmap(ax: plt.Axes, data: np.ndarray) -> None:
@@ -148,142 +157,46 @@ def _plot_best_concept_heatmap(
     reports_by_model: Dict[str, Dict[str, Any]],
     output_dir: Path,
     dpi: int,
+    level: str,
     method: str,
 ) -> Path:
-    concept_names = [
-        "instance_compactness_state",
-        "spatial_clustering_state",
-        "outlier_presence_state",
-        "load_concentration_state",
-        "linehaul_backhaul_balance_state",
-        "capacity_pressure_prior_state",
-        "tw_density_state",
-        "tw_width_profile_state",
-        "distance_budget_pressure_state",
-        "combined_constraint_tension_state",
-    ]
+    concept_names, display_names = _concept_names_and_labels(rows, reports_by_model)
     labels = _model_labels(rows)
     matrix = np.full((len(labels), len(concept_names)), np.nan, dtype=float)
-    display_names: List[str] = []
 
     for row_idx, row in enumerate(rows):
         report = reports_by_model[str(row["model"])]
-        display_names = []
         base_path = ["discovered_directions", "concept_alignment"]
         if method == "ica":
             base_path = ["alternative_methods", "ica", "concept_alignment"]
         for col_idx, concept_name in enumerate(concept_names):
-            display_names.append(
-                str(
-                    _nested_get(
-                        report,
-                        [*base_path, concept_name, "display_name"],
-                    )
-                    or concept_name
-                )
-            )
             matrix[row_idx, col_idx] = _num_or_nan(
-                _nested_get(
-                    report,
-                    [*base_path, concept_name, "best_abs_correlation"],
-                )
+                _nested_get(report, [*base_path, concept_name, "best_abs_correlation"])
             )
 
     fig, ax = plt.subplots(
-        figsize=(max(10.5, 1.25 * len(concept_names)), max(4.5, 1.1 * len(labels) + 2)),
+        figsize=(max(10.5, 0.8 * max(len(concept_names), 1)), max(4.5, 1.1 * len(labels) + 2)),
         constrained_layout=True,
     )
     im = ax.imshow(matrix, aspect="auto", cmap=plt.cm.YlGnBu, vmin=0.0, vmax=1.0)
-    ax.set_title(f"Best Absolute Correlation by Concept ({method.upper()})")
+    ax.set_title(f"{level.capitalize()} Best Absolute Correlation by Concept ({method.upper()})")
     ax.set_yticks(np.arange(len(labels)))
     ax.set_yticklabels(labels)
     ax.set_xticks(np.arange(len(concept_names)))
     ax.set_xticklabels(display_names, rotation=25, ha="right")
     _annotate_heatmap(ax, matrix)
     fig.colorbar(im, ax=ax, fraction=0.024, pad=0.02)
-    filename = (
-        "discovered_best_corr_heatmap.png"
-        if method == "pca"
-        else f"discovered_best_corr_heatmap_{method}.png"
-    )
+    filename = "discovered_best_corr_heatmap.png" if method == "pca" else f"discovered_best_corr_heatmap_{method}.png"
     path = output_dir / filename
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def _plot_best_known_bank_heatmap(
-    rows: Sequence[Dict[str, Any]],
-    reports_by_model: Dict[str, Dict[str, Any]],
-    output_dir: Path,
-    dpi: int,
-    method: str,
-) -> Path:
-    labels = _model_labels(rows)
-    reference_report = reports_by_model[str(rows[0]["model"])]
-    reference_artifacts = _load_artifacts(reference_report)
-    known_names = reference_artifacts["known_bank_names"].astype(str).tolist()
-    known_types = reference_artifacts["known_bank_types"].astype(str).tolist()
-    display_names: List[str] = []
-    for name, kind in zip(known_names, known_types):
-        if kind == "constraint":
-            display_names.append(
-                str(
-                    _nested_get(reference_report, ["constraint_reference_alignment", "concept_alignment", name, "display_name"])
-                    or name
-                )
-            )
-        else:
-            base_path = ["discovered_directions", "concept_alignment"]
-            display_names.append(
-                str(_nested_get(reference_report, [*base_path, name, "display_name"]) or name)
-            )
-
-    matrix = np.full((len(labels), len(known_names)), np.nan, dtype=float)
-    bank_path = ["known_bank_alignment", "concept_alignment"]
-    if method == "ica":
-        bank_path = ["alternative_methods", "known_bank_alignment", "concept_alignment"]
-    for row_idx, row in enumerate(rows):
-        report = reports_by_model[str(row["model"])]
-        for col_idx, known_name in enumerate(known_names):
-            matrix[row_idx, col_idx] = _num_or_nan(
-                _nested_get(report, [*bank_path, known_name, "best_abs_correlation"])
-            )
-
-    fig, ax = plt.subplots(
-        figsize=(max(12.0, 0.9 * len(known_names)), max(4.5, 1.1 * len(labels) + 2)),
-        constrained_layout=True,
-    )
-    im = ax.imshow(matrix, aspect="auto", cmap=plt.cm.YlGnBu, vmin=0.0, vmax=1.0)
-    ax.set_title(f"Best Absolute Correlation by Known Bank ({method.upper()})")
-    ax.set_yticks(np.arange(len(labels)))
-    ax.set_yticklabels(labels)
-    ax.set_xticks(np.arange(len(known_names)))
-    ax.set_xticklabels(display_names, rotation=25, ha="right")
-    _annotate_heatmap(ax, matrix)
-    constraint_end = sum(1 for kind in known_types if kind == "constraint")
-    if 0 < constraint_end < len(known_names):
-        ax.axvline(constraint_end - 0.5, color="black", linewidth=1.2)
-        ymax = len(labels) - 0.5
-        ax.text((constraint_end - 1) / 2.0, -0.95, "Constraints", ha="center", va="bottom", fontsize=10)
-        ax.text((constraint_end + len(known_names) - 1) / 2.0, -0.95, "Concepts", ha="center", va="bottom", fontsize=10)
-    fig.colorbar(im, ax=ax, fraction=0.024, pad=0.02)
-    filename = (
-        "discovered_known_bank_heatmap.png"
-        if method == "pca"
-        else f"discovered_known_bank_heatmap_{method}.png"
-    )
-    path = output_dir / filename
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-    return path
-
-
-def _plot_summary_bars(rows: Sequence[Dict[str, Any]], output_dir: Path, dpi: int) -> Path:
+def _plot_summary_bars(rows: Sequence[Dict[str, Any]], output_dir: Path, dpi: int, level: str) -> Path:
     labels = _model_labels(rows)
     positions = np.arange(len(labels), dtype=float)
     width = 0.22
-
     mean_corr = [_num_or_nan(row.get("mean_best_abs_correlation_top_components")) for row in rows]
     best_corr = [_num_or_nan(row.get("best_abs_correlation_overall")) for row in rows]
     top3_evr = [_num_or_nan(row.get("top3_cumulative_explained_variance_ratio")) for row in rows]
@@ -292,7 +205,7 @@ def _plot_summary_bars(rows: Sequence[Dict[str, Any]], output_dir: Path, dpi: in
     ax.bar(positions - width, mean_corr, width=width, label="Mean |corr|")
     ax.bar(positions, best_corr, width=width, label="Best |corr|")
     ax.bar(positions + width, top3_evr, width=width, label="Top-3 EVR")
-    ax.set_title("Discovered Direction Summary (PCA)")
+    ax.set_title(f"{level.capitalize()} Discovered Direction Summary (PCA)")
     ax.set_ylabel("score")
     ax.set_xticks(positions)
     ax.set_xticklabels(labels, rotation=25, ha="right")
@@ -305,15 +218,10 @@ def _plot_summary_bars(rows: Sequence[Dict[str, Any]], output_dir: Path, dpi: in
     return path
 
 
-def _plot_method_comparison_bars(
-    rows: Sequence[Dict[str, Any]],
-    output_dir: Path,
-    dpi: int,
-) -> Path:
+def _plot_method_comparison_bars(rows: Sequence[Dict[str, Any]], output_dir: Path, dpi: int, level: str) -> Path:
     labels = _model_labels(rows)
     positions = np.arange(len(labels), dtype=float)
     width = 0.18
-
     pca_mean = [_num_or_nan(row.get("mean_best_abs_correlation_top_components")) for row in rows]
     ica_mean = [_num_or_nan(row.get("ica_mean_best_abs_correlation_top_components")) for row in rows]
     pca_best = [_num_or_nan(row.get("best_abs_correlation_overall")) for row in rows]
@@ -324,7 +232,7 @@ def _plot_method_comparison_bars(
     ax.bar(positions - 0.5 * width, ica_mean, width=width, label="ICA mean |corr|")
     ax.bar(positions + 0.5 * width, pca_best, width=width, label="PCA best |corr|")
     ax.bar(positions + 1.5 * width, ica_best, width=width, label="ICA best |corr|")
-    ax.set_title("PCA vs ICA Alignment Summary")
+    ax.set_title(f"{level.capitalize()} PCA vs ICA Alignment Summary")
     ax.set_ylabel("score")
     ax.set_xticks(positions)
     ax.set_xticklabels(labels, rotation=25, ha="right")
@@ -337,7 +245,7 @@ def _plot_method_comparison_bars(
     return path
 
 
-def _plot_alignment_scatter(rows: Sequence[Dict[str, Any]], output_dir: Path, dpi: int) -> Path:
+def _plot_alignment_scatter(rows: Sequence[Dict[str, Any]], output_dir: Path, dpi: int, level: str) -> Path:
     fig, ax = plt.subplots(figsize=(6.6, 5.2), constrained_layout=True)
     for row in rows:
         x_value = _safe_float(row.get("top3_cumulative_explained_variance_ratio"))
@@ -349,7 +257,7 @@ def _plot_alignment_scatter(rows: Sequence[Dict[str, Any]], output_dir: Path, dp
         ax.annotate(label, (x_value, y_value), textcoords="offset points", xytext=(6, 4), fontsize=9)
     ax.set_xlabel("Top-3 cumulative explained variance")
     ax.set_ylabel("Mean best |corr|")
-    ax.set_title("Variance Concentration vs Direction Interpretability")
+    ax.set_title(f"{level.capitalize()} Variance Concentration vs Direction Interpretability")
     ax.grid(alpha=0.25)
 
     path = output_dir / "discovered_alignment_scatter.png"
@@ -364,6 +272,7 @@ def _plot_component_heatmaps(
     output_dir: Path,
     dpi: int,
     top_components: int,
+    level: str,
     method: str,
 ) -> Path:
     n_panels = len(rows)
@@ -421,105 +330,25 @@ def _plot_component_heatmaps(
     if last_im is not None:
         fig.colorbar(last_im, ax=axes.ravel().tolist(), fraction=0.018, pad=0.01)
 
-    filename = (
-        "discovered_component_heatmaps.png"
-        if method == "pca"
-        else f"discovered_component_heatmaps_{method}.png"
-    )
+    filename = "discovered_component_heatmaps.png" if method == "pca" else f"discovered_component_heatmaps_{method}.png"
     path = output_dir / filename
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def _plot_known_bank_component_heatmaps(
-    rows: Sequence[Dict[str, Any]],
-    reports_by_model: Dict[str, Dict[str, Any]],
-    output_dir: Path,
-    dpi: int,
-    top_components: int,
-    method: str,
-) -> Path:
-    n_panels = len(rows)
-    ncols = 2 if n_panels > 1 else 1
-    nrows = int(math.ceil(n_panels / ncols))
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=(max(12.0, 6.2 * ncols), max(3.8 * nrows, 4.2)),
-        constrained_layout=True,
-    )
-    if not isinstance(axes, np.ndarray):
-        axes = np.asarray([axes])
-    axes = axes.reshape(nrows, ncols)
-    last_im = None
-
-    for panel_idx, row in enumerate(rows):
-        report = reports_by_model[str(row["model"])]
-        artifacts = _load_artifacts(report)
-        corr_key = "known_bank_correlation_matrix" if method == "pca" else f"{method}_known_bank_correlation_matrix"
-        corr = np.asarray(artifacts[corr_key], dtype=np.float64)
-        known_names = artifacts["known_bank_names"].astype(str).tolist()
-        known_types = artifacts["known_bank_types"].astype(str).tolist()
-        n_use = min(top_components, corr.shape[0])
-        corr = corr[:n_use]
-        ax = axes.flat[panel_idx]
-        last_im = ax.imshow(corr, aspect="auto", cmap=plt.cm.RdBu_r, vmin=-1.0, vmax=1.0)
-        ax.set_title(_short_config_label(row))
-        ax.set_yticks(np.arange(n_use))
-        prefix = "PC" if method == "pca" else method.upper()
-        ax.set_yticklabels([f"{prefix}{i+1}" for i in range(n_use)])
-        display_names = []
-        for name, kind in zip(known_names, known_types):
-            if kind == "constraint":
-                display_names.append(
-                    str(
-                        _nested_get(report, ["constraint_reference_alignment", "concept_alignment", name, "display_name"])
-                        or name
-                    )
-                )
-            else:
-                path = ["discovered_directions", "concept_alignment", name, "display_name"]
-                display_names.append(str(_nested_get(report, path) or name))
-        ax.set_xticks(np.arange(len(known_names)))
-        ax.set_xticklabels(display_names, rotation=25, ha="right", fontsize=8)
-        constraint_end = sum(1 for kind in known_types if kind == "constraint")
-        if 0 < constraint_end < len(known_names):
-            ax.axvline(constraint_end - 0.5, color="black", linewidth=1.0)
-
-    for panel_idx in range(len(rows), nrows * ncols):
-        axes.flat[panel_idx].axis("off")
-
-    if last_im is not None:
-        fig.colorbar(last_im, ax=axes.ravel().tolist(), fraction=0.018, pad=0.01)
-
-    filename = (
-        "discovered_known_bank_component_heatmaps.png"
-        if method == "pca"
-        else f"discovered_known_bank_component_heatmaps_{method}.png"
-    )
-    path = output_dir / filename
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-    return path
-
-
-def _write_readme(output_dir: Path, generated: Sequence[Path]) -> Path:
+def _write_readme(output_dir: Path, generated: Sequence[Path], level: str) -> Path:
     lines = [
-        "# Discovered Directions Plots",
+        f"# {level.capitalize()} Discovered Directions Plots",
         "",
-        "These figures summarize the first unsupervised phase of latent analysis:",
+        f"These figures summarize the unsupervised {level}-level latent analysis:",
         "- `discovered_best_corr_heatmap.png`: PCA best absolute correlation by concept",
         "- `discovered_best_corr_heatmap_ica.png`: ICA best absolute correlation by concept",
-        "- `discovered_known_bank_heatmap.png`: PCA best absolute correlation over the full known bank (`constraints + concepts`)",
-        "- `discovered_known_bank_heatmap_ica.png`: ICA best absolute correlation over the full known bank",
         "- `discovered_summary_bars.png`: PCA summary bars for alignment and explained variance concentration",
         "- `discovered_method_comparison_bars.png`: direct PCA vs ICA comparison on alignment metrics",
         "- `discovered_alignment_scatter.png`: tradeoff between variance concentration and average interpretability",
         "- `discovered_component_heatmaps.png`: signed PCA component correlations with the concept bank",
         "- `discovered_component_heatmaps_ica.png`: signed ICA component correlations with the concept bank",
-        "- `discovered_known_bank_component_heatmaps.png`: signed PCA component correlations with `constraints + concepts`",
-        "- `discovered_known_bank_component_heatmaps_ica.png`: signed ICA component correlations with `constraints + concepts`",
         "",
         "Generated files:",
     ]
@@ -530,8 +359,8 @@ def _write_readme(output_dir: Path, generated: Sequence[Path]) -> Path:
     return readme_path
 
 
-def main() -> None:
-    args = _build_parser().parse_args()
+def main_for_level(level: str) -> None:
+    args = _build_parser(level).parse_args()
     input_path = Path(args.input_json)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -543,47 +372,15 @@ def main() -> None:
         raise SystemExit(f"No summary rows found in {input_path}")
 
     generated = [
-        _plot_best_concept_heatmap(rows, reports_by_model, output_dir, args.dpi, method="pca"),
-        _plot_best_concept_heatmap(rows, reports_by_model, output_dir, args.dpi, method="ica"),
-        _plot_best_known_bank_heatmap(rows, reports_by_model, output_dir, args.dpi, method="pca"),
-        _plot_best_known_bank_heatmap(rows, reports_by_model, output_dir, args.dpi, method="ica"),
-        _plot_summary_bars(rows, output_dir, args.dpi),
-        _plot_method_comparison_bars(rows, output_dir, args.dpi),
-        _plot_alignment_scatter(rows, output_dir, args.dpi),
-        _plot_component_heatmaps(
-            rows,
-            reports_by_model,
-            output_dir,
-            args.dpi,
-            args.top_components,
-            method="pca",
-        ),
-        _plot_component_heatmaps(
-            rows,
-            reports_by_model,
-            output_dir,
-            args.dpi,
-            args.top_components,
-            method="ica",
-        ),
-        _plot_known_bank_component_heatmaps(
-            rows,
-            reports_by_model,
-            output_dir,
-            args.dpi,
-            args.top_components,
-            method="pca",
-        ),
-        _plot_known_bank_component_heatmaps(
-            rows,
-            reports_by_model,
-            output_dir,
-            args.dpi,
-            args.top_components,
-            method="ica",
-        ),
+        _plot_best_concept_heatmap(rows, reports_by_model, output_dir, args.dpi, level, method="pca"),
+        _plot_best_concept_heatmap(rows, reports_by_model, output_dir, args.dpi, level, method="ica"),
+        _plot_summary_bars(rows, output_dir, args.dpi, level),
+        _plot_method_comparison_bars(rows, output_dir, args.dpi, level),
+        _plot_alignment_scatter(rows, output_dir, args.dpi, level),
+        _plot_component_heatmaps(rows, reports_by_model, output_dir, args.dpi, args.top_components, level, method="pca"),
+        _plot_component_heatmaps(rows, reports_by_model, output_dir, args.dpi, args.top_components, level, method="ica"),
     ]
-    generated.append(_write_readme(output_dir, generated))
+    generated.append(_write_readme(output_dir, generated, level))
 
     print(f"Wrote plots to {output_dir}")
     for path in generated:
@@ -591,4 +388,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("Use plot_node_discovered_directions.py or plot_edge_discovered_directions.py")

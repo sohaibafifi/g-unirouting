@@ -61,15 +61,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-json",
-        default="logs/xai/encoder/discovered_direction_stability/comparison.json",
+        default="logs/xai/encoder/graph/discovered_directions/stability/comparison.json",
     )
     parser.add_argument(
         "--output-md",
-        default="logs/xai/encoder/discovered_direction_stability/comparison.md",
+        default="logs/xai/encoder/graph/discovered_directions/stability/comparison.md",
     )
     parser.add_argument(
         "--per-config-dir",
-        default="logs/xai/encoder/discovered_direction_stability/runs",
+        default="logs/xai/encoder/graph/discovered_directions/stability/runs",
     )
     return parser
 

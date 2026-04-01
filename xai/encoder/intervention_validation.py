@@ -44,7 +44,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-components", type=int, default=5)
     parser.add_argument(
         "--output",
-        default="logs/xai/encoder/intervention_validation/probe.json",
+        default="logs/xai/encoder/graph/discovered_directions/intervention_validation/probe.json",
     )
     return parser
 

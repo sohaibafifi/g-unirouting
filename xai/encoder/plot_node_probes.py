@@ -36,8 +36,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate human-readable plots from encoder node-probe comparison JSON."
     )
-    parser.add_argument("--input-json", default="logs/xai/encoder/node_probes/comparison.json")
-    parser.add_argument("--output-dir", default="logs/xai/encoder/node_probes/plots")
+    parser.add_argument("--input-json", default="logs/xai/encoder/node/probes/comparison.json")
+    parser.add_argument("--output-dir", default="logs/xai/encoder/node/probes/plots")
     parser.add_argument(
         "--projection-methods",
         nargs="*",
