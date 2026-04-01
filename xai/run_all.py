@@ -417,6 +417,107 @@ def _encoder_edge_flow(
     }
 
 
+def _encoder_discovered_stability_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    comparison_json = _resolve_path(project_root, args.encoder_discovered_stability_output_json)
+    comparison_md = _resolve_path(project_root, args.encoder_discovered_stability_output_md)
+    per_config_dir = _resolve_path(project_root, args.encoder_discovered_stability_per_config_dir)
+    plot_dir = _resolve_path(project_root, args.encoder_discovered_stability_plot_dir)
+
+    compare_cmd = [
+        args.python_bin,
+        "xai/compare_discovered_direction_stability.py",
+        f"--num-samples={args.encoder_discovered_stability_num_samples}",
+        f"--pooling={args.encoder_discovered_stability_pooling}",
+        f"--data-seed={args.encoder_discovered_stability_data_seed}",
+        f"--seed-start={args.encoder_discovered_stability_seed_start}",
+        f"--num-runs={args.encoder_discovered_stability_num_runs}",
+        f"--num-components={args.encoder_discovered_stability_num_components}",
+        f"--top-components={args.encoder_discovered_stability_top_components}",
+        f"--sort-by={args.encoder_discovered_stability_sort_by}",
+        f"--output-json={comparison_json}",
+        f"--output-md={comparison_md}",
+        f"--per-config-dir={per_config_dir}",
+    ]
+    _append_list_arg(compare_cmd, "--config-ids", args.encoder_config_ids)
+    _append_arg(compare_cmd, "--device", args.encoder_device)
+    _append_arg(compare_cmd, "--graph-size", args.encoder_graph_size)
+    _append_arg(compare_cmd, "--problem", args.encoder_problem)
+    _run(compare_cmd, project_root, env, args.dry_run, executed)
+
+    if not args.skip_encoder_plots:
+        plot_cmd = [
+            args.python_bin,
+            "xai/plot_discovered_direction_stability.py",
+            f"--input-json={comparison_json}",
+            f"--output-dir={plot_dir}",
+            f"--dpi={args.encoder_plot_dpi}",
+        ]
+        _run(plot_cmd, project_root, env, args.dry_run, executed)
+
+    return {
+        "comparison_json": str(comparison_json),
+        "comparison_md": str(comparison_md),
+        "per_config_dir": str(per_config_dir),
+        "plot_dir": str(plot_dir),
+        "num_runs": int(args.encoder_discovered_stability_num_runs),
+    }
+
+
+def _encoder_intervention_validation_flow(
+    args: argparse.Namespace,
+    project_root: Path,
+    env: Dict[str, str],
+    executed: List[str],
+) -> Dict[str, Any]:
+    comparison_json = _resolve_path(project_root, args.encoder_intervention_output_json)
+    comparison_md = _resolve_path(project_root, args.encoder_intervention_output_md)
+    per_config_dir = _resolve_path(project_root, args.encoder_intervention_per_config_dir)
+    plot_dir = _resolve_path(project_root, args.encoder_intervention_plot_dir)
+
+    compare_cmd = [
+        args.python_bin,
+        "xai/compare_intervention_validation.py",
+        f"--num-samples={args.encoder_intervention_num_samples}",
+        f"--pooling={args.encoder_intervention_pooling}",
+        f"--seed={args.encoder_intervention_seed}",
+        f"--num-components={args.encoder_intervention_num_components}",
+        f"--top-components={args.encoder_intervention_top_components}",
+        f"--sort-by={args.encoder_intervention_sort_by}",
+        f"--output-json={comparison_json}",
+        f"--output-md={comparison_md}",
+        f"--per-config-dir={per_config_dir}",
+    ]
+    _append_list_arg(compare_cmd, "--config-ids", args.encoder_config_ids)
+    _append_arg(compare_cmd, "--device", args.encoder_device)
+    _append_arg(compare_cmd, "--graph-size", args.encoder_graph_size)
+    _append_arg(compare_cmd, "--problem", args.encoder_problem)
+    _run(compare_cmd, project_root, env, args.dry_run, executed)
+
+    if not args.skip_encoder_plots:
+        plot_cmd = [
+            args.python_bin,
+            "xai/plot_intervention_validation.py",
+            f"--input-json={comparison_json}",
+            f"--output-dir={plot_dir}",
+            f"--dpi={args.encoder_plot_dpi}",
+        ]
+        _run(plot_cmd, project_root, env, args.dry_run, executed)
+
+    return {
+        "comparison_json": str(comparison_json),
+        "comparison_md": str(comparison_md),
+        "per_config_dir": str(per_config_dir),
+        "plot_dir": str(plot_dir),
+        "num_components": int(args.encoder_intervention_num_components),
+        "top_components": int(args.encoder_intervention_top_components),
+    }
+
+
 def _encoder_flow(
     args: argparse.Namespace,
     project_root: Path,
@@ -430,6 +531,14 @@ def _encoder_flow(
         manifest["graph_concepts"] = _encoder_graph_concept_flow(args, project_root, env, executed)
     if not args.skip_encoder_discovered_directions:
         manifest["discovered_directions"] = _encoder_discovered_direction_flow(
+            args, project_root, env, executed
+        )
+    if args.enable_encoder_discovered_stability:
+        manifest["discovered_direction_stability"] = _encoder_discovered_stability_flow(
+            args, project_root, env, executed
+        )
+    if args.enable_encoder_intervention_validation:
+        manifest["intervention_validation"] = _encoder_intervention_validation_flow(
             args, project_root, env, executed
         )
     if not args.skip_encoder_node_probes:
@@ -773,6 +882,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-encoder-constraints", action="store_true")
     parser.add_argument("--skip-encoder-graph-concepts", action="store_true")
     parser.add_argument("--skip-encoder-discovered-directions", action="store_true")
+    parser.add_argument("--enable-encoder-discovered-stability", action="store_true")
+    parser.add_argument("--enable-encoder-intervention-validation", action="store_true")
     parser.add_argument("--skip-encoder-node-probes", action="store_true")
     parser.add_argument("--skip-encoder-edge-probes", action="store_true")
     parser.add_argument("--skip-decoder-run", action="store_true")
@@ -915,6 +1026,82 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--encoder-discovered-plot-dir",
         default="logs/xai/encoder/discovered_directions/plots",
+    )
+    parser.add_argument("--encoder-discovered-stability-num-samples", type=int, default=1024)
+    parser.add_argument(
+        "--encoder-discovered-stability-pooling",
+        choices=["mean", "meanstd", "depot_meanstd"],
+        default="meanstd",
+    )
+    parser.add_argument("--encoder-discovered-stability-data-seed", type=int, default=1234)
+    parser.add_argument("--encoder-discovered-stability-seed-start", type=int, default=1234)
+    parser.add_argument("--encoder-discovered-stability-num-runs", type=int, default=4)
+    parser.add_argument("--encoder-discovered-stability-num-components", type=int, default=8)
+    parser.add_argument("--encoder-discovered-stability-top-components", type=int, default=5)
+    parser.add_argument(
+        "--encoder-discovered-stability-sort-by",
+        choices=[
+            "pca_component_alignment_mean",
+            "ica_component_alignment_mean",
+            "pca_same_top_concept_ratio_mean",
+            "ica_same_top_concept_ratio_mean",
+            "pca_mean_abs_corr_mean",
+            "ica_mean_abs_corr_mean",
+        ],
+        default="ica_component_alignment_mean",
+    )
+    parser.add_argument(
+        "--encoder-discovered-stability-output-json",
+        default="logs/xai/encoder/discovered_direction_stability/comparison.json",
+    )
+    parser.add_argument(
+        "--encoder-discovered-stability-output-md",
+        default="logs/xai/encoder/discovered_direction_stability/comparison.md",
+    )
+    parser.add_argument(
+        "--encoder-discovered-stability-per-config-dir",
+        default="logs/xai/encoder/discovered_direction_stability/runs",
+    )
+    parser.add_argument(
+        "--encoder-discovered-stability-plot-dir",
+        default="logs/xai/encoder/discovered_direction_stability/plots",
+    )
+
+    parser.add_argument("--encoder-intervention-num-samples", type=int, default=512)
+    parser.add_argument(
+        "--encoder-intervention-pooling",
+        choices=["mean", "meanstd", "depot_meanstd"],
+        default="meanstd",
+    )
+    parser.add_argument("--encoder-intervention-seed", type=int, default=1234)
+    parser.add_argument("--encoder-intervention-num-components", type=int, default=8)
+    parser.add_argument("--encoder-intervention-top-components", type=int, default=5)
+    parser.add_argument(
+        "--encoder-intervention-sort-by",
+        choices=[
+            "pca_mean_directional_success",
+            "ica_mean_directional_success",
+            "pca_mean_aligned_delta_correlation",
+            "ica_mean_aligned_delta_correlation",
+            "concept_success_mean",
+        ],
+        default="ica_mean_directional_success",
+    )
+    parser.add_argument(
+        "--encoder-intervention-output-json",
+        default="logs/xai/encoder/intervention_validation/comparison.json",
+    )
+    parser.add_argument(
+        "--encoder-intervention-output-md",
+        default="logs/xai/encoder/intervention_validation/comparison.md",
+    )
+    parser.add_argument(
+        "--encoder-intervention-per-config-dir",
+        default="logs/xai/encoder/intervention_validation/runs",
+    )
+    parser.add_argument(
+        "--encoder-intervention-plot-dir",
+        default="logs/xai/encoder/intervention_validation/plots",
     )
 
     parser.add_argument("--encoder-node-num-samples", type=int, default=256)
